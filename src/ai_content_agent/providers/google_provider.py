@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 
 from .base import ScriptResult, VideoGenerator, VideoResult, TextGenerator
 
@@ -62,6 +63,7 @@ class VeoProvider(VideoGenerator):
             operation = self._client.operations.get(operation)
 
         video = operation.response.generated_videos[0]
+        Path("output").mkdir(exist_ok=True)
         out_path = f"output/{script.title[:40].strip().replace(' ', '_')}.mp4"
         self._client.files.download(file=video.video)
         video.video.save(out_path)

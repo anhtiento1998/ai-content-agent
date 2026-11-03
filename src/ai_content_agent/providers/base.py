@@ -23,6 +23,7 @@ class ScriptResult:
 class VideoResult:
     file_path: str
     duration_seconds: float | None = None
+    thumbnail_path: str | None = None
     raw: dict | None = None
 
 

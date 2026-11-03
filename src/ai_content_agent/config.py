@@ -22,6 +22,10 @@ class Config:
     text_provider: str
     video_provider: str
 
+    history_db_path: str
+    dedup_window_days: int
+    make_thumbnails: bool
+
     @classmethod
     def from_env(cls) -> "Config":
         from dotenv import load_dotenv
@@ -41,4 +45,7 @@ class Config:
             instagram_access_token=os.getenv("INSTAGRAM_ACCESS_TOKEN"),
             text_provider=os.getenv("TEXT_PROVIDER", "claude"),
             video_provider=os.getenv("VIDEO_PROVIDER", "veo"),
+            history_db_path=os.getenv("HISTORY_DB_PATH", "data/history.db"),
+            dedup_window_days=int(os.getenv("DEDUP_WINDOW_DAYS", "30")),
+            make_thumbnails=os.getenv("MAKE_THUMBNAILS", "true").lower() not in ("false", "0", ""),
         )

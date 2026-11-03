@@ -7,6 +7,7 @@ needs to construct and run.
 from __future__ import annotations
 
 from ai_content_agent.config import Config
+from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.providers import TEXT_PROVIDERS, VIDEO_PROVIDERS
 from ai_content_agent.publishers import FacebookPublisher, InstagramPublisher, TikTokPublisher, YouTubePublisher
@@ -70,4 +71,7 @@ class ContentAgent:
             text_generator=self._build_text_generator(),
             video_generator=self._build_video_generator(),
             publishers=self._build_publishers(platforms),
+            history=HistoryStore(self._config.history_db_path),
+            dedup_window_days=self._config.dedup_window_days,
+            make_thumbnails=self._config.make_thumbnails,
         )

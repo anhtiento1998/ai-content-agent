@@ -20,7 +20,13 @@ TextGenerator   (gpt | claude | gemini)   -> ScriptResult{title, script, hashtag
 VideoGenerator  (veo | muse)              -> VideoResult{file_path}
    │
    ▼
+Thumbnail       (ffmpeg + Pillow)         -> VideoResult.thumbnail_path
+   │
+   ▼
 Publisher[]     (youtube | tiktok | facebook | instagram)  -> PublishResult{url}
+   │
+   ▼
+HistoryStore    (SQLite)                  -> lưu run + từng lượt đăng, chặn topic trùng
 ```
 
 - `src/ai_content_agent/providers/` — mỗi AI engine là 1 class implement
@@ -29,6 +35,10 @@ Publisher[]     (youtube | tiktok | facebook | instagram)  -> PublishResult{url}
   implement `Publisher` (`publishers/base.py`).
 - `src/ai_content_agent/pipeline/content_pipeline.py` — nối 3 bước lại,
   không biết chi tiết của bất kỳ provider/publisher cụ thể nào.
+- `src/ai_content_agent/media/thumbnail.py` — cắt 1 frame từ video,
+  crop giữa về 1280x720, phủ tiêu đề lên.
+- `src/ai_content_agent/history.py` — SQLite lưu lịch sử, chống đăng
+  trùng topic trong `DEDUP_WINDOW_DAYS` ngày.
 - `src/ai_content_agent/agent.py` — đọc config, dựng pipeline cụ thể.
 - `src/ai_content_agent/cli.py` — chạy 1 lần (`run`) hoặc theo lịch
   (`schedule`, dùng cron expression).
@@ -46,8 +56,16 @@ Publisher[]     (youtube | tiktok | facebook | instagram)  -> PublishResult{url}
 | TikTok — publish | khung đúng theo Content Posting API, cần app TikTok for Business được duyệt quyền `video.publish` |
 | Facebook Page — publish | hoạt động, cần Page access token dài hạn |
 | Instagram Reels — publish | hoạt động nhưng yêu cầu video đã có public URL (upload lên S3/GCS trước khi gọi) |
+| Thumbnail tự động | hoạt động, cần `ffmpeg` trên máy; YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không xác minh thì bỏ qua, video vẫn đăng bình thường) |
+| Chống đăng trùng topic | hoạt động (SQLite, không cần cài thêm gì) |
 
 ## Cài đặt
+
+Cần Python 3.11+ và `ffmpeg` (cho bước tạo thumbnail):
+
+```bash
+# macOS: brew install ffmpeg   |   Ubuntu: sudo apt install ffmpeg
+```
 
 ```bash
 cd ai-content-agent
@@ -66,6 +84,19 @@ python scripts/run_once.py "5 mẹo tiết kiệm điện mùa hè" --dry-run
 
 ```bash
 ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --platform youtube --platform tiktok
+```
+
+Topic đã đăng trong 30 ngày gần nhất sẽ tự bị bỏ qua (so sánh không phân
+biệt hoa thường/khoảng trắng). Muốn đăng lại vẫn được:
+
+```bash
+ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --platform youtube --force
+```
+
+## Xem lịch sử đã sinh/đăng
+
+```bash
+ai-content-agent history --limit 20
 ```
 
 ## Chạy theo lịch (cron, trong 1 tiến trình dài hạn)
@@ -117,15 +148,21 @@ Không cần sửa `content_pipeline.py` hay `agent.py` cho cả hai trường h
 pytest
 ```
 
-Test hiện tại chỉ kiểm tra các provider/publisher implement đúng
-interface — không gọi API thật (không tốn tiền, không cần key).
+Test dùng provider/publisher giả — không gọi API thật (không tốn tiền,
+không cần key). Bao gồm: interface compliance, pipeline end-to-end,
+chống trùng topic, `--force`, dry-run, publisher lỗi không chặn
+publisher khác, và tạo thumbnail thật bằng ffmpeg (tự skip nếu máy
+không có ffmpeg).
 
 ## Roadmap
 
 - [ ] Thay `requests` upload trực tiếp bằng pre-signed URL upload cho
       video lớn (YouTube/TikTok resumable upload đã hỗ trợ, cần hoàn
       thiện retry/backoff).
-- [ ] Thêm bước tạo thumbnail tự động.
-- [ ] Thêm bước lưu lịch sử đã đăng (tránh trùng topic) — SQLite đơn giản.
-- [ ] Thêm dashboard xem lịch đăng / log lỗi.
+- [x] Thêm bước tạo thumbnail tự động.
+- [x] Thêm bước lưu lịch sử đã đăng (tránh trùng topic) — SQLite đơn giản.
+- [x] Xem lịch sử qua CLI (`ai-content-agent history`).
+- [ ] Dashboard web xem lịch đăng / log lỗi.
+- [ ] Tự upload video lên storage public (S3/GCS) để Instagram dùng được
+      ngay trong pipeline.
 - [ ] Điền API thật cho Meta Muse khi có quyền truy cập.

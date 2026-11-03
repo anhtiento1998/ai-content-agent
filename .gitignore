@@ -10,4 +10,5 @@ dist/
 client_secret.json
 youtube_token.json
 output/
+data/
 .pytest_cache/

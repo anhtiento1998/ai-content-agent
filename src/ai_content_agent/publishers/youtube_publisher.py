@@ -7,8 +7,12 @@ that produces a cached token — see README.md "YouTube setup".
 
 from __future__ import annotations
 
+import logging
+
 from .base import Publisher, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
+
+logger = logging.getLogger(__name__)
 
 
 class YouTubePublisher(Publisher):
@@ -59,6 +63,16 @@ class YouTubePublisher(Publisher):
         request = service.videos().insert(part="snippet,status", body=body, media_body=media)
         response = request.execute()
         video_id = response["id"]
+
+        if video.thumbnail_path:
+            try:
+                service.thumbnails().set(
+                    videoId=video_id, media_body=MediaFileUpload(video.thumbnail_path)
+                ).execute()
+            except Exception:
+                # Custom thumbnails require a phone-verified channel; not fatal.
+                logger.warning("Setting custom thumbnail failed for video %s", video_id, exc_info=True)
+
         return PublishResult(
             platform=self.name,
             remote_id=video_id,
