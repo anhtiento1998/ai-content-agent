@@ -1,0 +1,28 @@
+[project]
+name = "ai-content-agent"
+version = "0.1.0"
+description = "Automated multi-platform content & video generation agent (GPT, Claude, Google AI, Meta Muse)"
+requires-python = ">=3.11"
+dependencies = [
+    "openai>=1.50",
+    "anthropic>=0.40",
+    "google-genai>=0.3",
+    "google-api-python-client>=2.140",
+    "google-auth-oauthlib>=1.2",
+    "requests>=2.32",
+    "python-dotenv>=1.0",
+    "apscheduler>=3.10",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ai-content-agent = "ai_content_agent.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
