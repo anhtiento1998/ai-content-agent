@@ -19,6 +19,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0", "httpx>=0.27"]
+# Community reverse-engineered CapCut draft writer — format is unofficial and may change.
+capcut = ["pycapcut>=0.0.4,<0.1"]
 
 [project.scripts]
 ai-content-agent = "ai_content_agent.cli:main"

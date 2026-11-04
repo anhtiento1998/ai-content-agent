@@ -65,7 +65,14 @@ def serve(
         )
 
     token = config.dashboard_token or secrets.token_urlsafe(24)
-    app = create_app(history=history, jobs=jobs, token=token, config_status=config.status(), schedule=schedule)
+    app = create_app(
+        history=history,
+        jobs=jobs,
+        token=token,
+        config_status=config.status(),
+        schedule=schedule,
+        capcut_exporter=agent.capcut_exporter(),
+    )
 
     if not _is_loopback(host):
         logger.warning(

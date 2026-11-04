@@ -279,6 +279,12 @@ input[type="text"]:focus, input[type="password"]:focus {
 .job-error { color: var(--red); font: 0.8rem var(--mono); margin-top: 10px; overflow-wrap: anywhere; }
 .job-path { overflow-wrap: anywhere; color: var(--faint); }
 .job-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; font-size: 0.85rem; }
+.capcut-path { color: var(--violet); }
+.job-actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+.btn.small { padding: 6px 12px; font-size: 0.74rem; border-color: rgba(160, 125, 255, 0.45); color: var(--violet); background: rgba(160, 125, 255, 0.08); transition: box-shadow 0.2s, border-color 0.2s; }
+.btn.small:hover:not(:disabled) { border-color: var(--violet); box-shadow: 0 0 16px rgba(160, 125, 255, 0.35); }
+.btn.small:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn.small.busy { cursor: progress; animation: blink 0.8s ease-in-out infinite; }
 
 .badge {
   display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; padding: 2px 10px; border-radius: 999px;

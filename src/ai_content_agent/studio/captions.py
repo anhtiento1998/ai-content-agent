@@ -70,6 +70,24 @@ def _ass_time(seconds: float) -> str:
     return f"{hours}:{minutes:02d}:{secs:02d}.{cs:02d}"
 
 
+def _srt_time(seconds: float) -> str:
+    millis = max(0, round(seconds * 1000))
+    hours, rest = divmod(millis, 3_600_000)
+    minutes, rest = divmod(rest, 60_000)
+    secs, ms = divmod(rest, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{ms:03d}"
+
+
+def build_srt(captions: list[Caption]) -> str:
+    """SubRip captions — the format desktop editors such as CapCut import."""
+
+    blocks = [
+        f"{i}\n{_srt_time(cap.start)} --> {_srt_time(cap.end)}\n{' '.join(cap.text.split())}\n"
+        for i, cap in enumerate(captions, 1)
+    ]
+    return "\n".join(blocks)
+
+
 def _ass_escape(text: str) -> str:
     # Braces start override tags and backslashes start escapes in ASS.
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ")

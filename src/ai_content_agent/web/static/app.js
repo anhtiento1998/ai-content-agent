@@ -25,6 +25,7 @@ const STAGES = {
   video: "Tạo video",
   thumbnail: "Thumbnail",
   publish: "Đăng bài",
+  capcut: "Xuất CapCut",
 };
 const ENGINE_CHIPS = [
   ["script", "text_provider", "text_providers"],
@@ -61,6 +62,7 @@ const state = {
   seenRuns: new Set(),
   signatures: {},
   schedule: null,
+  config: null,
 };
 
 // ---------- token ----------
@@ -311,6 +313,7 @@ function toast(tone, title, message) {
 // ---------- renderers ----------
 
 function renderConfig(cfg) {
+  state.config = cfg;
   $("provider-chips").replaceChildren(...ENGINE_CHIPS.map(([label, key, group]) => {
     const name = cfg[key];
     const info = (cfg[group] || {})[name];
@@ -463,8 +466,40 @@ function buildJobCard(job, previousPercent, isNew) {
     el("div", { class: "thruster", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(percent) }, fill),
     job.error ? el("div", { class: "job-error", text: `> ${stagePrefix}${job.error}` }) : null,
     job.video_path ? el("div", { class: "job-meta job-path", text: `▣ ${job.video_path}` }) : null,
+    job.capcut_draft ? el("div", { class: "job-meta job-path capcut-path", text: `◆ CapCut: ${job.capcut_draft}` }) : null,
     job.results.length ? el("div", { class: "job-links" }, publishLinks(job.results)) : null,
+    capcutButton(job),
   ]);
+}
+
+function capcutButton(job) {
+  if (!job.video_path) return null;
+  const status = state.config && state.config.capcut;
+  const ready = Boolean(status && status.ready);
+  return el("div", { class: "job-actions" }, el("button", {
+    type: "button",
+    class: "btn small",
+    "data-capcut": job.id,
+    disabled: !ready,
+    title: ready ? "Tạo project nháp để mở và chỉnh tay trong CapCut desktop" : status && status.note,
+    text: job.capcut_draft ? "⇪ Xuất lại CapCut" : "⇪ Xuất CapCut",
+  }));
+}
+
+async function exportCapcut(button) {
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    const { draft } = await api(`/api/jobs/${encodeURIComponent(button.dataset.capcut)}/capcut`, { method: "POST" });
+    toast("ok", "CAPCUT DRAFT READY", `Mở lại CapCut để thấy project: ${draft}`);
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else toast("bad", "CAPCUT EXPORT FAILED", err.message);
+    button.disabled = false;
+  } finally {
+    button.classList.remove("busy");
+  }
 }
 
 function announce(job, previous) {
@@ -651,6 +686,10 @@ document.addEventListener("DOMContentLoaded", () => {
   startStarfield();
   loadToken();
   $("run-form").addEventListener("submit", submitRun);
+  $("jobs").addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-capcut]");
+    if (button && !button.disabled) exportCapcut(button);
+  });
   $("auth-form").addEventListener("submit", submitAuth);
   window.addEventListener("hashchange", () => {
     if (!location.hash.includes("token=")) return;

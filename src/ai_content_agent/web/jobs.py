@@ -50,6 +50,7 @@ class Job:
     stage: str | None = None
     stage_done: int = 0
     stage_total: int = 0
+    capcut_draft: str | None = None
 
 
 class JobManager:
@@ -120,6 +121,7 @@ class JobManager:
                 return
 
             job.video_path = outcome.video.file_path if outcome.video else None
+            job.capcut_draft = outcome.capcut_draft
             job.results = [
                 {"platform": r.platform, "remote_id": r.remote_id, "url": r.url} for r in outcome.published
             ]
@@ -153,6 +155,11 @@ class JobManager:
         with self._lock:
             job = self._jobs.get(job_id)
             return asdict(job) if job else None
+
+    def set_capcut_draft(self, job_id: str, path: str) -> None:
+        with self._lock:
+            if job_id in self._jobs:
+                self._jobs[job_id].capcut_draft = path
 
     def wait(self, job_id: str, timeout: float | None = None) -> None:
         self._futures[job_id].result(timeout=timeout)

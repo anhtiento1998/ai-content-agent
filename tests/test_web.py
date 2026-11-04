@@ -216,3 +216,57 @@ def test_job_exposes_stage_progress(env):
     job = _run(client, jobs, platforms=["youtube", "tiktok"])
 
     assert (job["stage"], job["stage_done"], job["stage_total"]) == ("publish", 2, 2)
+
+
+class _StubCapCut:
+    def __init__(self, fail=False):
+        self.calls, self._fail = [], fail
+
+    def export(self, work_dir):
+        self.calls.append(str(work_dir))
+        if self._fail:
+            raise RuntimeError("format changed")
+        return f"{work_dir}/draft"
+
+
+def _app_with_capcut(tmp_path, exporter):
+    history = HistoryStore(str(tmp_path / "h.db"))
+    jobs = JobManager(
+        lambda platforms: ContentPipeline(FakeStudio(str(tmp_path / "run" / "final.mp4")), [], history=history,
+                                          make_thumbnails=False),
+        history=history,
+    )
+    app = create_app(history=history, jobs=jobs, token=TOKEN, config_status=_config().status(),
+                     capcut_exporter=exporter)
+    return TestClient(app), jobs
+
+
+def test_capcut_export_uses_the_jobs_own_work_folder(tmp_path):
+    exporter = _StubCapCut()
+    client, jobs = _app_with_capcut(tmp_path, exporter)
+    job = _run(client, jobs, platforms=[], dry_run=True)
+
+    res = client.post(f"/api/jobs/{job['id']}/capcut", headers=AUTH)
+
+    assert res.status_code == 200, res.text
+    assert exporter.calls == [str(tmp_path / "run")]
+    assert client.get(f"/api/jobs/{job['id']}", headers=AUTH).json()["capcut_draft"] == res.json()["draft"]
+    jobs.shutdown()
+
+
+def test_capcut_export_errors(tmp_path):
+    client, jobs = _app_with_capcut(tmp_path, _StubCapCut(fail=True))
+    job = _run(client, jobs, platforms=[], dry_run=True)
+
+    assert client.post("/api/jobs/nope/capcut", headers=AUTH).status_code == 404
+    assert client.post(f"/api/jobs/{job['id']}/capcut").status_code == 401
+    res = client.post(f"/api/jobs/{job['id']}/capcut", headers=AUTH)
+    assert res.status_code == 500 and "format changed" in res.json()["detail"]
+    assert client.get("/api/errors", headers=AUTH).json()[0]["stage"] == "capcut"
+    jobs.shutdown()
+
+
+def test_capcut_export_unavailable_without_exporter(env):
+    client, jobs, _ = env
+    job = _run(client, jobs, platforms=[], dry_run=True)
+    assert client.post(f"/api/jobs/{job['id']}/capcut", headers=AUTH).status_code == 501

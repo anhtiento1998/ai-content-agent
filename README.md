@@ -88,6 +88,7 @@ xác nhận.
 | Đăng Facebook Page | Page access token dài hạn; trả về link `facebook.com/watch` | HTTP giả lập: có; API thật: chưa |
 | Thumbnail tự động | YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không thì bỏ qua, video vẫn đăng) | có |
 | Chống đăng trùng topic, dashboard, lịch tự động | — | có |
+| Xuất project nháp CapCut | `pip install -e ".[capcut]"`, chỉ CapCut bản quốc tế | trên bản giả lập pycapcut: có; mở trong CapCut thật: **chưa** |
 
 **Lưu ý chi phí:** API của OpenAI, Anthropic, Google được tính tiền
 **riêng** với gói ChatGPT Plus / Claude Pro / Google AI Pro dùng trên web
@@ -210,6 +211,41 @@ localhost, vì dashboard có thể đăng bài thật lên tài khoản của b�
 định chỉ nghe trên `127.0.0.1`. Nếu mở ra mạng ngoài (`--host 0.0.0.0`),
 hãy đặt sau reverse proxy có HTTPS để token không bị gửi dạng plain text.
 
+## Xuất project nháp CapCut (chỉnh tay)
+
+Mỗi video đã dựng có thể xuất thành **project nháp mở được trong CapCut
+desktop**, với từng phần là 1 track riêng để sửa: hình từng cảnh (ảnh có
+keyframe zoom chậm, clip lặp cho đủ thời lượng), giọng đọc, nhạc nền (âm
+lượng nhỏ), logo, chữ tiêu đề vàng, phụ đề (nhập từ `subtitles.srt`).
+
+```bash
+pip install -e ".[capcut]"     # thư viện pycapcut (cộng đồng, không chính thức)
+```
+
+3 cách xuất:
+- Dashboard: nút **⇪ Xuất CapCut** trên mỗi nhiệm vụ đã dựng xong.
+- CLI: `ai-content-agent capcut` (lần chạy mới nhất) hoặc
+  `ai-content-agent capcut output/<thư mục lần chạy>`.
+- Tự động sau mỗi lần dựng: đặt `CAPCUT_EXPORT=true` trong `.env` (lỗi
+  xuất CapCut chỉ ghi vào log, không chặn việc đăng bài).
+
+Project được ghi vào thư mục nháp của CapCut trên Windows
+(`%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft`, đổi bằng
+`CAPCUT_DRAFTS_DIR`). **Đóng CapCut trước khi xuất**, mở lại để thấy project.
+Media được tham chiếu trực tiếp từ thư mục `output/...` của lần chạy — đừng
+xóa/di chuyển thư mục đó khi còn chỉnh trong CapCut.
+
+**Lưu ý quan trọng:** CapCut không có API hay định dạng project chính thức.
+Bộ xuất dùng `pycapcut` (định dạng do cộng đồng phân tích ngược, chỉ hỗ trợ
+**CapCut bản quốc tế**, không phải JianYing) và mới được kiểm tra trên bản
+giả lập mô phỏng đúng các ràng buộc của pycapcut — **chưa mở thử trong
+CapCut thật**. Phiên bản CapCut mới có thể thay đổi định dạng.
+
+Nếu project nháp không mở được, mọi thứ để dựng lại tay đã có sẵn trong thư
+mục lần chạy: `scene_01_visual.*`, `scene_01_voice.wav`, … theo thứ tự,
+`subtitles.srt` (dùng chức năng nhập phụ đề từ file SRT của CapCut), và `timeline.json` ghi
+thời điểm bắt đầu/độ dài từng cảnh.
+
 ## Setup từng nền tảng
 
 ### YouTube
@@ -295,7 +331,7 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
       đọc mỗi cảnh, phụ đề, nhạc nền, logo, xuất MP4.
 - [ ] **Bước 2 — App desktop Windows** (file cài `.exe`).
 - [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
-- [ ] **Bước 4 — Xuất project nháp CapCut** từ thư mục của mỗi lần chạy.
+- [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).
 - [ ] Xem trước video + sửa kịch bản từng cảnh ngay trên dashboard trước
       khi dựng.
 - [ ] Phụ đề khớp từng từ (nhận dạng giọng đọc để lấy thời gian chính xác).

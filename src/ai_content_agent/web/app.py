@@ -18,6 +18,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
+from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.scheduler import TopicRotation
 from ai_content_agent.publishers import PUBLISHERS
@@ -67,6 +68,7 @@ def create_app(
     token: str,
     config_status: dict,
     schedule: ScheduleInfo | None = None,
+    capcut_exporter: CapCutExporter | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Content Agent", docs_url=None, redoc_url=None, openapi_url=None)
     expected = token.encode()
@@ -111,6 +113,24 @@ def create_app(
         if job is None:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
+
+    @api.post("/jobs/{job_id}/capcut")
+    def export_capcut(job_id: str) -> dict:
+        # The work folder comes from the server's own job record, never from the client.
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not job["video_path"]:
+            raise HTTPException(status_code=409, detail="This job has no rendered video to export")
+        if capcut_exporter is None:
+            raise HTTPException(status_code=501, detail="CapCut export is not available on this server")
+        try:
+            draft = str(capcut_exporter.export(Path(job["video_path"]).parent))
+        except Exception as exc:
+            history.record_error(job["topic"], "capcut", f"{type(exc).__name__}: {exc}")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        jobs.set_capcut_draft(job_id, draft)
+        return {"draft": draft}
 
     @api.get("/config")
     def config() -> dict:

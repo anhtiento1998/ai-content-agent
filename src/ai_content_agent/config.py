@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, fields
 from pathlib import Path
 
+from ai_content_agent.export.capcut import capcut_status
+
 
 @dataclass
 class Config:
@@ -31,6 +33,9 @@ class Config:
     brand_logo_path: str | None = None
     subtitle_font: str = "Arial"
     keep_intermediates: bool = False
+
+    capcut_export: bool = False
+    capcut_drafts_dir: str | None = None
 
     youtube_token_file: str = "youtube_token.json"
     youtube_client_secret_file: str = "client_secret.json"
@@ -98,6 +103,7 @@ class Config:
                 "gemini": entry(google),
                 "silent": entry(True),
             },
+            "capcut": capcut_status(),
             "platforms": {
                 "youtube": entry(
                     Path(self.youtube_token_file).exists(),

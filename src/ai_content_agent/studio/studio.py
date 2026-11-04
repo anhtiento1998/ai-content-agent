@@ -26,7 +26,7 @@ from ai_content_agent.providers.base import (
     VoiceGenerator,
 )
 from ai_content_agent.studio import render
-from ai_content_agent.studio.captions import Caption, build_ass, split_into_chunks, time_captions
+from ai_content_agent.studio.captions import Caption, build_ass, build_srt, split_into_chunks, time_captions
 from ai_content_agent.studio.storyboard import Storyboard, write_storyboard
 from ai_content_agent.utils import slugify
 
@@ -36,7 +36,10 @@ _TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504, 529}  # 529 = Anthropic "over
 _TRANSIENT_NAMES = {"APIConnectionError", "APITimeoutError", "RateLimitError", "ServiceUnavailable"}
 # Kept after a successful render: inputs a desktop editor needs to rebuild the
 # edit (storyboard, per-scene visuals and voice, captions) plus the outputs.
-_KEEP_PATTERNS = ("storyboard.json", "scene_*_visual.*", "scene_??_voice.wav", "subtitles.ass", "final.mp4", "thumbnail.jpg")
+_KEEP_PATTERNS = (
+    "storyboard.json", "timeline.json", "scene_*_visual.*", "scene_??_voice.wav",
+    "subtitles.ass", "subtitles.srt", "final.mp4", "thumbnail.jpg",
+)
 
 
 @dataclass
@@ -178,17 +181,13 @@ class VideoStudio:
                     hooks.append(Caption(start, start + duration, scene.on_screen_text))
                 start += duration
             (work / "subtitles.ass").write_text(build_ass(captions, hooks, font=self._settings.font), encoding="utf-8")
+            (work / "subtitles.srt").write_text(build_srt(captions), encoding="utf-8")
 
             total = sum(durations)
+            music, logo = self._pick_music(), self._logo()
+            self._write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo)
             render.compose_final(
-                "visuals.mp4",
-                "voice.wav",
-                "subtitles.ass",
-                "final.mp4",
-                total,
-                cwd=cwd,
-                music=self._pick_music(),
-                logo=self._logo(),
+                "visuals.mp4", "voice.wav", "subtitles.ass", "final.mp4", total, cwd=cwd, music=music, logo=logo
             )
         except Exception as exc:
             raise StudioStageError("render", f"{type(exc).__name__}: {exc}") from exc
@@ -241,6 +240,40 @@ class VideoStudio:
             raise
         pool.shutdown()
         return durations
+
+    @staticmethod
+    def _write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo) -> None:
+        """timeline.json: the edit decision list — what plays when. Exporters (CapCut) rebuild the
+        edit from this instead of re-deriving timings."""
+
+        scenes, start = [], 0.0
+        for i, (scene, visual, voice_duration, duration) in enumerate(
+            zip(storyboard.scenes, visual_files, voice_durations, durations), 1
+        ):
+            scenes.append({
+                "index": i,
+                "start": round(start, 6),
+                "duration": duration,
+                "visual": visual,
+                "visual_kind": "video" if is_video else "image",
+                "zoom_in": i % 2 == 1,
+                "voice": f"scene_{i:02d}_voice.wav",
+                "voice_duration": voice_duration,
+                "on_screen_text": scene.on_screen_text,
+            })
+            start += duration
+        timeline = {
+            "title": storyboard.title,
+            "width": render.WIDTH,
+            "height": render.HEIGHT,
+            "fps": render.FPS,
+            "duration": sum(durations),
+            "captions": "subtitles.srt",
+            "music": music,
+            "logo": logo,
+            "scenes": scenes,
+        }
+        (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")
 
     @staticmethod
     def _remove_intermediates(work: Path) -> None:

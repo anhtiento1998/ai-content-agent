@@ -8,6 +8,7 @@ providers/__init__.py; this module only knows which credentials each needs.
 from __future__ import annotations
 
 from ai_content_agent.config import Config
+from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.providers import TEXT_PROVIDERS, VISUAL_PROVIDERS, VOICE_PROVIDERS
@@ -107,4 +108,8 @@ class ContentAgent:
             history=HistoryStore(self._config.history_db_path),
             dedup_window_days=self._config.dedup_window_days,
             make_thumbnails=self._config.make_thumbnails,
+            capcut_exporter=self.capcut_exporter() if self._config.capcut_export else None,
         )
+
+    def capcut_exporter(self) -> CapCutExporter:
+        return CapCutExporter(self._config.capcut_drafts_dir)

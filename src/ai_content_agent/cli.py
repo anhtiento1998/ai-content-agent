@@ -53,6 +53,10 @@ def main() -> None:
 
     sub.add_parser("youtube-auth", help="One-time YouTube consent in a browser; caches the token for publishing")
 
+    capcut_p = sub.add_parser("capcut", help="Export a rendered run as an editable CapCut desktop draft")
+    capcut_p.add_argument("work_dir", nargs="?", help="Run folder under OUTPUT_DIR (default: the latest run)")
+    capcut_p.add_argument("--drafts-dir", help="CapCut draft folder (default: CapCut's own, or CAPCUT_DRAFTS_DIR)")
+
     dash_p = sub.add_parser("dashboard", help="Start the web dashboard")
     dash_p.add_argument("--host", default="127.0.0.1")
     dash_p.add_argument("--port", type=int, default=8000)
@@ -85,6 +89,8 @@ def main() -> None:
             print("Skipped: this topic was already published recently (use --force to post again).")
             return
         print(f"Video: {outcome.video.file_path} ({outcome.video.duration_seconds:.1f}s)")
+        if outcome.capcut_draft:
+            print(f"CapCut draft: {outcome.capcut_draft}")
         for result in outcome.published:
             print(f"{result.platform}: {result.url or result.remote_id}")
         failed = set(platforms) - {r.platform for r in outcome.published}
@@ -107,6 +113,23 @@ def main() -> None:
         for run in runs:
             platforms = ", ".join(p.platform for p in run.publishes) or "not published"
             print(f"[{run.created_at}] #{run.id} {run.title!r} (topic={run.topic!r}) -> {platforms}")
+
+    elif args.command == "capcut":
+        from ai_content_agent.export.capcut import CapCutExporter
+
+        if args.work_dir:
+            work_dir = Path(args.work_dir)
+        else:
+            runs = sorted(Path(config.output_dir).glob("*/timeline.json"), key=lambda p: p.stat().st_mtime)
+            if not runs:
+                sys.exit(f"No exportable runs in {config.output_dir} — render one with `ai-content-agent run ... --dry-run`")
+            work_dir = runs[-1].parent
+        try:
+            draft = CapCutExporter(args.drafts_dir or config.capcut_drafts_dir).export(work_dir)
+        except (RuntimeError, FileNotFoundError) as exc:
+            sys.exit(f"CapCut export failed: {exc}")
+        print(f"CapCut draft: {draft}")
+        print("Close and reopen CapCut desktop to see it in the project list.")
 
     elif args.command == "youtube-auth":
         from ai_content_agent.publishers.youtube_publisher import authorize
