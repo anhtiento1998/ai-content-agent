@@ -1,13 +1,16 @@
-"""Google AI (Gemini for scripts, Veo for video) — covered by a Google AI Pro plan."""
+"""Google AI: Gemini text, Imagen images, Veo clips and Gemini TTS.
+
+Model names and parameters for Imagen/Veo/TTS change often — override them
+with VISUAL_MODEL / VOICE_MODEL in .env when Google renames a model.
+"""
 
 from __future__ import annotations
 
 import time
+import wave
 from pathlib import Path
 
-from ai_content_agent.utils import slugify
-
-from .base import ScriptResult, TextGenerator, VideoGenerator, VideoResult, build_script_prompt, parse_script_json
+from .base import ImageGenerator, TextGenerator, VideoGenerator, VoiceGenerator
 
 
 class GeminiProvider(TextGenerator):
@@ -19,43 +22,86 @@ class GeminiProvider(TextGenerator):
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
-    def generate_script(self, topic: str, *, style: str = "", max_words: int = 150) -> ScriptResult:
-        response = self._client.models.generate_content(
-            model=self._model, contents=build_script_prompt(topic, style, max_words)
-        )
-        return parse_script_json(response.text)
+    def complete(self, prompt: str) -> str:
+        return self._client.models.generate_content(model=self._model, contents=prompt).text
 
 
-class VeoProvider(VideoGenerator):
-    """Veo video generation via the Gemini API.
+class ImagenProvider(ImageGenerator):
+    name = "imagen"
 
-    NOTE: Veo access/quota and exact parameters depend on your Google AI Pro
-    tier. Verify the current model name and polling contract against the
-    live docs before relying on this in production — Google revises Veo's
-    API surface frequently.
-    """
-
-    name = "veo"
-
-    def __init__(self, api_key: str, model: str = "veo-3.0-generate-001") -> None:
+    def __init__(self, api_key: str, model: str = "imagen-4.0-generate-001") -> None:
         from google import genai
 
         self._client = genai.Client(api_key=api_key)
         self._model = model
 
-    def generate_video(self, script: ScriptResult, *, aspect_ratio: str = "9:16") -> VideoResult:
-        operation = self._client.models.generate_videos(
+    def generate_image(self, prompt: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
+        response = self._client.models.generate_images(
             model=self._model,
-            prompt=script.script,
-            config={"aspect_ratio": aspect_ratio},
+            prompt=prompt,
+            config={"number_of_images": 1, "aspect_ratio": aspect_ratio},
+        )
+        if not response.generated_images:
+            raise RuntimeError("Imagen returned no image (prompt may have been blocked by safety filters)")
+        Path(out_path).write_bytes(response.generated_images[0].image.image_bytes)
+
+
+class VeoProvider(VideoGenerator):
+    """One Veo call per scene — the most expensive visual option; check your quota."""
+
+    name = "veo"
+
+    def __init__(self, api_key: str, model: str = "veo-3.0-generate-001", poll_seconds: int = 10) -> None:
+        from google import genai
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+        self._poll_seconds = poll_seconds
+
+    def generate_clip(self, prompt: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
+        operation = self._client.models.generate_videos(
+            model=self._model, prompt=prompt, config={"aspect_ratio": aspect_ratio}
         )
         while not operation.done:
-            time.sleep(10)
+            time.sleep(self._poll_seconds)
             operation = self._client.operations.get(operation)
 
+        if not operation.response or not operation.response.generated_videos:
+            raise RuntimeError(f"Veo returned no video: {operation.error or 'unknown error'}")
         video = operation.response.generated_videos[0]
-        Path("output").mkdir(exist_ok=True)
-        out_path = f"output/{slugify(script.title)}_{int(time.time())}.mp4"
         self._client.files.download(file=video.video)
         video.video.save(out_path)
-        return VideoResult(file_path=out_path, raw={"operation_name": operation.name})
+
+
+class GeminiVoiceProvider(VoiceGenerator):
+    name = "gemini"
+
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-preview-tts", voice: str = "Kore") -> None:
+        from google import genai
+
+        self._client = genai.Client(api_key=api_key)
+        self._model = model
+        self._voice = voice
+
+    def synthesize(self, text: str, out_path: str) -> None:
+        from google.genai import types
+
+        response = self._client.models.generate_content(
+            model=self._model,
+            contents=text,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._voice)
+                    )
+                ),
+            ),
+        )
+        pcm = response.candidates[0].content.parts[0].inline_data.data
+        # Gemini TTS returns raw 16-bit mono PCM at 24 kHz.
+        with wave.open(out_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(24000)
+            wav.writeframes(pcm)

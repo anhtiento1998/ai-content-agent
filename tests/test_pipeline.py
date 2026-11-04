@@ -1,28 +1,23 @@
-"""Pipeline, history and thumbnail tests — fake providers, no network calls."""
+"""Pipeline, history and thumbnail tests — fake studio/publishers, no network calls."""
 
 import shutil
 import subprocess
 
 import pytest
-from fakes import FakePublisher, FakeText, FakeVideo
+from fakes import FakePublisher, FakeStudio
 
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
-from ai_content_agent.providers.base import parse_script_json
+from ai_content_agent.studio import StudioStageError
 
 
-def _pipeline(tmp_path, publishers, *, text=None, **kwargs):
-    text = text or FakeText()
+def _pipeline(tmp_path, publishers, *, studio=None):
+    studio = studio or FakeStudio(str(tmp_path / "video.mp4"))
     pipeline = ContentPipeline(
-        text,
-        FakeVideo(str(tmp_path / "video.mp4")),
-        publishers,
-        history=HistoryStore(str(tmp_path / "history.db")),
-        make_thumbnails=False,
-        **kwargs,
+        studio, publishers, history=HistoryStore(str(tmp_path / "history.db")), make_thumbnails=False
     )
-    return pipeline, text
+    return pipeline, studio
 
 
 def _history(tmp_path):
@@ -32,42 +27,44 @@ def _history(tmp_path):
 def test_run_publishes_and_records_history(tmp_path):
     pipeline, _ = _pipeline(tmp_path, [FakePublisher()])
 
-    results = pipeline.run("Mẹo tiết kiệm điện")
+    outcome = pipeline.run("Mẹo tiết kiệm điện")
 
-    assert [r.platform for r in results] == ["fake"]
-    runs = _history(tmp_path).recent_runs()
-    assert len(runs) == 1
-    assert runs[0].topic == "mẹo tiết kiệm điện"
-    assert [p.platform for p in runs[0].publishes] == ["fake"]
+    assert not outcome.skipped
+    assert outcome.video.file_path == str(tmp_path / "video.mp4")
+    assert outcome.script.title == "Title for Mẹo tiết kiệm điện"
+    assert [r.platform for r in outcome.published] == ["fake"]
+    [run] = _history(tmp_path).recent_runs()
+    assert run.topic == "mẹo tiết kiệm điện"
+    assert [p.platform for p in run.publishes] == ["fake"]
 
 
 def test_duplicate_topic_is_skipped_unless_forced(tmp_path):
-    pipeline, text = _pipeline(tmp_path, [FakePublisher()])
+    pipeline, studio = _pipeline(tmp_path, [FakePublisher()])
 
     pipeline.run("Same Topic")
-    assert pipeline.run("  same   topic ") == []
-    assert text.calls == 1
+    assert pipeline.run("  same   topic ").skipped
+    assert studio.calls == 1
 
-    assert len(pipeline.run("Same Topic", force=True)) == 1
-    assert text.calls == 2
+    assert len(pipeline.run("Same Topic", force=True).published) == 1
+    assert studio.calls == 2
 
 
 def test_topic_whose_publishes_all_failed_can_be_retried(tmp_path):
-    pipeline, text = _pipeline(tmp_path, [FakePublisher(fail=True)])
+    pipeline, studio = _pipeline(tmp_path, [FakePublisher(fail=True)])
 
     pipeline.run("Retry me")
     pipeline.run("Retry me")
 
-    assert text.calls == 2
+    assert studio.calls == 2
 
 
 def test_failing_publisher_does_not_block_others_and_is_logged(tmp_path):
     good = FakePublisher(name="tiktok")
     pipeline, _ = _pipeline(tmp_path, [FakePublisher(name="youtube", fail=True), good])
 
-    results = pipeline.run("Topic")
+    outcome = pipeline.run("Topic")
 
-    assert len(results) == 1
+    assert len(outcome.published) == 1
     assert len(good.published) == 1
     [error] = _history(tmp_path).recent_errors()
     assert (error.stage, error.platform) == ("publish", "youtube")
@@ -75,22 +72,28 @@ def test_failing_publisher_does_not_block_others_and_is_logged(tmp_path):
     assert error.run_id is not None
 
 
-def test_script_failure_is_logged_and_reraised(tmp_path):
-    pipeline, _ = _pipeline(tmp_path, [FakePublisher()], text=FakeText(fail=True))
+@pytest.mark.parametrize("stage", ["script", "voice", "visual", "render"])
+def test_studio_failure_is_logged_with_its_stage_and_reraised(tmp_path, stage):
+    studio = FakeStudio(str(tmp_path / "video.mp4"), fail_stage=stage)
+    pipeline, _ = _pipeline(tmp_path, [FakePublisher()], studio=studio)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(StudioStageError):
         pipeline.run("Topic")
 
     [error] = _history(tmp_path).recent_errors()
-    assert error.stage == "script"
+    assert error.stage == stage
+    assert error.message == f"scene 1: RuntimeError: {stage} broke"
     assert _history(tmp_path).recent_runs() == []
 
 
-def test_dry_run_does_not_publish_or_record(tmp_path):
+def test_dry_run_returns_video_without_publishing_or_recording(tmp_path):
     publisher = FakePublisher()
     pipeline, _ = _pipeline(tmp_path, [publisher])
 
-    assert pipeline.run("Topic", dry_run=True) == []
+    outcome = pipeline.run("Topic", dry_run=True)
+
+    assert outcome.video is not None
+    assert outcome.published == []
     assert publisher.published == []
     assert _history(tmp_path).recent_runs() == []
 
@@ -105,24 +108,6 @@ def test_stats(tmp_path):
     assert stats["total_runs"] == 2
     assert stats["publishes_by_platform"] == {"youtube": 2}
     assert stats["errors_last_7_days"] == 2
-
-
-@pytest.mark.parametrize(
-    "reply",
-    [
-        '{"title": "T", "script": "S", "hashtags": ["#a", "b"]}',
-        'Sure! Here it is:\n```json\n{"title": "T", "script": "S", "hashtags": ["#a", "b"]}\n```',
-        'Here you go: {"title": "T", "script": "S", "hashtags": ["#a", "b"]} Enjoy!',
-    ],
-)
-def test_parse_script_json_tolerates_fences_and_prose(reply):
-    script = parse_script_json(reply)
-    assert (script.title, script.script, script.hashtags) == ("T", "S", ["a", "b"])
-
-
-def test_parse_script_json_rejects_non_json():
-    with pytest.raises(ValueError):
-        parse_script_json("I cannot help with that.")
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")

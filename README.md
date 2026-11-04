@@ -1,50 +1,55 @@
 # ai-content-agent
 
-Agent tự động hóa toàn bộ chuỗi: **sinh ý tưởng/script → tạo video → đăng
-lên nhiều nền tảng mạng xã hội**, dùng GPT, Claude, Google AI (Gemini/Veo)
-và Meta Muse làm engine chính, đăng lên **YouTube Shorts, TikTok và
-Facebook Page**.
+Studio sản xuất video ngắn tự động: **chủ đề → kịch bản chia cảnh → hình
+ảnh + giọng đọc cho từng cảnh → phụ đề, nhạc nền, logo → video MP4 dọc
+hoàn chỉnh → đăng lên YouTube Shorts, TikTok, Facebook Page**.
 
-Kiến trúc được thiết kế để **thêm nền tảng mới chỉ cần viết 1 class**,
-không phải sửa lại pipeline. Có **dashboard web** (mở bằng trình duyệt)
-để bấm tạo video, theo dõi tiến trình, xem lịch sử, lịch tự động và log
-lỗi.
+Các AI (Claude, GPT, Gemini, Muse Spark, Imagen, Veo) tạo nguyên liệu;
+studio dựng (bằng FFmpeg) ghép chúng thành video thành phẩm — khâu mà
+trước đây phải làm tay trong CapCut. Có **dashboard web** để bấm tạo
+video, theo dõi tiến trình, xem lịch sử, lịch tự động và log lỗi.
 
 ![Dashboard](docs/dashboard.png)
 
 ## Kiến trúc
 
 ```
-topic (string)
-   │
-   ▼
-TextGenerator   (gpt | claude | gemini | muse)  -> ScriptResult{title, script, hashtags}
-   │
-   ▼
-VideoGenerator  (veo)                     -> VideoResult{file_path}
-   │
-   ▼
-Thumbnail       (ffmpeg + Pillow)         -> VideoResult.thumbnail_path
-   │
-   ▼
-Publisher[]     (youtube | tiktok | facebook)  -> PublishResult{url}
-   │
-   ▼
-HistoryStore    (SQLite)                  -> lưu run, lượt đăng, lỗi từng bước; chặn topic trùng
+chủ đề
+  │
+  ▼  TextGenerator  (claude | gpt | gemini | muse)
+Storyboard {title, description, hashtags, scenes[{narration, visual_prompt, on_screen_text}]}
+  │
+  ├─► VoiceGenerator (gemini | gpt | silent)       ─┐  song song, mỗi cảnh 1 lần
+  └─► Image/VideoGenerator (imagen | gpt-image |    │
+                            veo | card)            ─┘
+  │
+  ▼  Studio (FFmpeg)
+     ảnh → zoom chậm (Ken Burns) / clip → cắt hoặc lặp cho khớp lời đọc
+     phụ đề khớp từng câu + chữ tiêu đề mỗi cảnh (ASS/libass)
+     nhạc nền (tự hạ âm lượng dưới giọng) + logo + chuẩn hóa âm lượng -14 LUFS
+  │
+  ▼  final.mp4 1080x1920 30fps H.264/AAC  +  thumbnail.jpg
+  │
+  ▼  Publisher[] (youtube | tiktok | facebook)  →  HistoryStore (SQLite)
 ```
 
-Dashboard web (`ai-content-agent dashboard`) = FastAPI + HTML/JS thuần,
-chạy pipeline qua 1 hàng đợi background (mỗi lần 1 job để kiểm soát chi
-phí API), và có thể chạy luôn lịch cron trong cùng tiến trình.
+Mỗi lần chạy có 1 thư mục riêng `output/<tên>_<thời gian>/` chứa
+`storyboard.json`, từng file giọng/hình/cảnh, `subtitles.ass`,
+`final.mp4`, `thumbnail.jpg` — để kiểm tra lại, dựng lại, hoặc (sắp tới)
+xuất sang CapCut chỉnh tay.
 
-- `src/ai_content_agent/providers/` — mỗi AI engine là 1 class implement
-  `TextGenerator` hoặc `VideoGenerator` (`providers/base.py`).
+- `src/ai_content_agent/providers/` — adapter cho từng AI: 4 interface
+  `TextGenerator`, `ImageGenerator`, `VideoGenerator`, `VoiceGenerator`
+  (`providers/base.py`). `local_provider.py` có engine offline (`card`,
+  `silent`) để xem thử bố cục không tốn API.
+- `src/ai_content_agent/studio/` — lõi dựng phim: `storyboard.py` (kịch
+  bản chia cảnh), `captions.py` (phụ đề), `render.py` (lệnh FFmpeg),
+  `studio.py` (điều phối).
 - `src/ai_content_agent/publishers/` — mỗi nền tảng đăng bài là 1 class
   implement `Publisher` (`publishers/base.py`).
-- `src/ai_content_agent/pipeline/content_pipeline.py` — nối 3 bước lại,
-  không biết chi tiết của bất kỳ provider/publisher cụ thể nào.
-- `src/ai_content_agent/media/thumbnail.py` — cắt 1 frame từ video,
-  crop giữa về 1280x720, phủ tiêu đề lên.
+- `src/ai_content_agent/pipeline/content_pipeline.py` — studio →
+  thumbnail → đăng bài → lưu lịch sử.
+- `src/ai_content_agent/media/` — helper FFmpeg và thumbnail 1280x720.
 - `src/ai_content_agent/history.py` — SQLite lưu lịch sử + lỗi, chống
   đăng trùng topic trong `DEDUP_WINDOW_DAYS` ngày (chỉ tính lượt đã đăng
   thành công, nên lần đăng thất bại có thể chạy lại).
@@ -56,39 +61,75 @@ phí API), và có thể chạy luôn lịch cron trong cùng tiến trình.
 
 ### Trạng thái từng provider/publisher
 
-| Thành phần | Trạng thái |
-|---|---|
-| GPT (OpenAI) — script | hoạt động, cần `OPENAI_API_KEY` |
-| Claude (Anthropic) — script | hoạt động, cần `ANTHROPIC_API_KEY` |
-| Gemini (Google AI) — script | hoạt động, cần `GOOGLE_API_KEY` |
-| Muse Spark (Meta) — script | hoạt động qua **Meta Model API** (public preview, chỉ developer ở Mỹ), model `muse-spark-1.1`, cần `META_MODEL_API_KEY` + `META_MODEL_API_BASE_URL` (lấy base URL từ [dev.meta.ai/docs](https://dev.meta.ai/docs)) |
-| Veo (Google AI Pro) — video | hoạt động nếu tài khoản có quyền Veo; tên model/tham số nên verify lại với docs hiện tại vì Google đổi khá thường xuyên |
-| Muse Video (Meta) — video | **chưa có** — tính đến 10/2026 Meta chưa mở API chính thức cho Muse Video. Chọn `VIDEO_PROVIDER=muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền sinh script trước). Các dịch vụ bên thứ ba bọc gói muse.ai không chính thức nên không được hỗ trợ |
-| YouTube — publish | hoạt động, cần OAuth app (xem dưới) |
-| TikTok — publish | hoạt động theo Content Posting API (Direct Post, tự chia chunk cho video > 64MB), cần app được cấp quyền `video.publish`. **Trước khi TikTok audit app, bài chỉ đăng được ở chế độ riêng tư** (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`) |
-| Facebook Page — publish | hoạt động, cần Page access token dài hạn; trả về link `facebook.com/watch` |
-| Thumbnail tự động | hoạt động, cần `ffmpeg` trên máy; YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không xác minh thì bỏ qua, video vẫn đăng bình thường) |
-| Chống đăng trùng topic | hoạt động (SQLite, không cần cài thêm gì) |
+Cột "Đã test" phân biệt rõ: phần nào đã chạy thật trong quá trình phát
+triển, phần nào mới viết theo docs của nhà cung cấp và cần API key thật để
+xác nhận.
 
-## Cài đặt
+| Thành phần | Cấu hình | Đã test |
+|---|---|---|
+| Kịch bản — Claude / GPT / Gemini | `TEXT_PROVIDER=claude\|gpt\|gemini` + key tương ứng | phần parse/kiểm tra kịch bản: có; gọi API thật: chưa |
+| Kịch bản — Muse Spark (Meta) | `TEXT_PROVIDER=muse`, `META_MODEL_API_KEY` + `META_MODEL_API_BASE_URL` (lấy từ [dev.meta.ai/docs](https://dev.meta.ai/docs)). Meta Model API đang public preview, chỉ developer ở Mỹ | chưa |
+| Hình ảnh — Imagen / GPT image | `VISUAL_PROVIDER=imagen\|gpt-image` | chưa (cần key) |
+| Hình ảnh — Veo (clip mỗi cảnh) | `VISUAL_PROVIDER=veo` — **đắt nhất**: 1 lần gọi Veo cho mỗi cảnh | phần cắt/lặp clip: có; gọi Veo thật: chưa |
+| Hình ảnh — nền màu offline | `VISUAL_PROVIDER=card` — không cần API, để xem thử bố cục | có |
+| Hình ảnh — Muse Video (Meta) | **chưa có** — tính đến 10/2026 Meta chưa mở API. Chọn `muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền viết kịch bản trước) | — |
+| Giọng đọc — Gemini / GPT TTS | `VOICE_PROVIDER=gemini\|gpt`, chọn giọng qua `VOICE_NAME` | chưa (cần key) |
+| Giọng đọc — không giọng | `VOICE_PROVIDER=silent` — video chỉ có phụ đề + nhạc | có |
+| Dựng video (FFmpeg): zoom ảnh, ghép cảnh, phụ đề, nhạc, logo, chuẩn hóa âm lượng | luôn bật | có (dựng video thật trong test) |
+| Đăng YouTube | OAuth app (xem dưới) | HTTP giả lập: chưa; API thật: chưa |
+| Đăng TikTok | Content Posting API, tự chia chunk cho video > 64MB. **Trước khi TikTok audit app, bài chỉ đăng ở chế độ riêng tư** (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`) | HTTP giả lập: có; API thật: chưa |
+| Đăng Facebook Page | Page access token dài hạn; trả về link `facebook.com/watch` | HTTP giả lập: có; API thật: chưa |
+| Thumbnail tự động | YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không thì bỏ qua, video vẫn đăng) | có |
+| Chống đăng trùng topic, dashboard, lịch tự động | — | có |
 
-Cần Python 3.11+ và `ffmpeg` (cho bước tạo thumbnail):
+**Lưu ý chi phí:** API của OpenAI, Anthropic, Google được tính tiền
+**riêng** với gói ChatGPT Plus / Claude Pro / Google AI Pro dùng trên web
+— cần tạo API key và nạp credit ở trang developer của từng hãng. Một video
+40 giây ≈ 1 lần gọi kịch bản + 4–8 ảnh (hoặc 4–8 clip Veo) + 4–8 lần đọc
+giọng.
 
-```bash
-# macOS: brew install ffmpeg   |   Ubuntu: sudo apt install ffmpeg
+Phụ đề được căn thời gian theo độ dài từng câu trong mỗi cảnh (không phải
+nhận dạng giọng từng từ), nên luôn khớp đầu/cuối cảnh nhưng có thể lệch
+nhẹ trong cảnh dài.
+
+## Cài đặt (Windows)
+
+Cần Python 3.11+ và FFmpeg:
+
+```powershell
+winget install Python.Python.3.12
+winget install Gyan.FFmpeg
 ```
 
-```bash
+```powershell
 cd ai-content-agent
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv
+.venv\Scripts\activate
 pip install -e ".[dev]"
-cp .env.example .env   # rồi điền API key
+copy .env.example .env    # rồi mở .env điền API key
 ```
 
-## Chạy thử (không đăng, chỉ sinh nội dung)
+(macOS/Linux: `brew install ffmpeg` hoặc `sudo apt install ffmpeg`,
+kích hoạt venv bằng `source .venv/bin/activate`.)
+
+Nhạc nền: bỏ file `.mp3`/`.wav` không bản quyền vào `assets/music/`, mỗi
+video chọn ngẫu nhiên 1 bài. Logo: đặt `BRAND_LOGO_PATH` tới 1 file PNG.
+
+## Xem thử bố cục gần như không tốn API
+
+Trong `.env` đặt `VISUAL_PROVIDER=card` và `VOICE_PROVIDER=silent` (chỉ
+còn tốn 1 lần gọi AI viết kịch bản), rồi chạy:
 
 ```bash
-python scripts/run_once.py "5 mẹo tiết kiệm điện mùa hè" --dry-run
+ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --dry-run
+```
+
+`--dry-run` dựng video nhưng không đăng, in ra đường dẫn `final.mp4`.
+
+## Tạo video đầy đủ (không đăng)
+
+```bash
+ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --dry-run
 ```
 
 ## Chạy thật, đăng lên 1 hoặc nhiều nền tảng
@@ -141,7 +182,8 @@ Dashboard có:
   phần / bỏ qua / thất bại).
 - Lịch tự động: cron, lần chạy tới, chủ đề tiếp theo.
 - Lịch sử kèm link bài đã đăng, và log lỗi theo từng bước (khởi tạo,
-  viết script, tạo video, thumbnail, đăng bài).
+  kịch bản, giọng đọc, hình ảnh, dựng video, thumbnail, đăng bài) — lỗi ở
+  giọng/hình ghi rõ cảnh số mấy.
 
 **Bảo mật:** mọi API của dashboard đều yêu cầu token, kể cả trên
 localhost, vì dashboard có thể đăng bài thật lên tài khoản của bạn. Mặc
@@ -183,14 +225,16 @@ hãy đặt sau reverse proxy có HTTPS để token không bị gửi dạng pla
      trong `ContentAgent._build_publishers()` để truyền credentials.
    - (Tuỳ chọn) thêm tên hiển thị vào `PLATFORM_LABELS` trong
      `web/static/app.js`.
-2. Thêm AI engine mới (text hoặc video):
-   - Viết class mới trong `providers/`, implement `TextGenerator` hoặc
-     `VideoGenerator`.
-   - Đăng ký vào `TEXT_PROVIDERS`/`VIDEO_PROVIDERS` trong
-     `providers/__init__.py`, thêm nhánh trong `agent.py` để truyền key.
-   - Chọn qua `TEXT_PROVIDER`/`VIDEO_PROVIDER` trong `.env`.
+2. Thêm AI engine mới (kịch bản, hình ảnh, video hoặc giọng đọc):
+   - Viết class mới trong `providers/`, implement 1 trong
+     `TextGenerator.complete()`, `ImageGenerator.generate_image()`,
+     `VideoGenerator.generate_clip()`, `VoiceGenerator.synthesize()`.
+   - Đăng ký vào `TEXT_PROVIDERS` / `VISUAL_PROVIDERS` /
+     `VOICE_PROVIDERS` trong `providers/__init__.py`, thêm nhánh trong
+     `agent.py` để truyền key, và 1 dòng trong `Config.status()`.
+   - Chọn qua `TEXT_PROVIDER` / `VISUAL_PROVIDER` / `VOICE_PROVIDER`.
 
-Không cần sửa `content_pipeline.py` cho cả hai trường hợp.
+Không cần sửa `studio/` hay `content_pipeline.py` cho cả hai trường hợp.
 
 ## Test
 
@@ -199,7 +243,11 @@ pytest
 ```
 
 Test dùng provider/publisher giả — không gọi API thật (không tốn tiền,
-không cần key). Bao gồm: interface compliance, pipeline end-to-end,
+không cần key). Bao gồm: **dựng video thật bằng FFmpeg** (ảnh + nhạc +
+logo, và clip video bị lặp cho khớp lời đọc — kiểm tra kích thước
+1080x1920, có audio, đúng thời lượng), parse/kiểm tra kịch bản chia cảnh,
+phụ đề không bao giờ cắt ngang câu, lỗi được gắn đúng bước và số cảnh,
+interface compliance, pipeline end-to-end,
 chống trùng topic, `--force`, dry-run, publisher lỗi không chặn
 publisher khác, ghi log lỗi từng bước, parse JSON từ model (kể cả khi bọc
 trong ```` ```json ````), toàn bộ API dashboard (xác thực token, trạng thái
@@ -217,7 +265,15 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] Dashboard web xem lịch đăng / log lỗi / tạo video.
 - [x] Kết nối Meta Muse Spark (text) qua Meta Model API.
 - [x] Tập trung 3 nền tảng YouTube, TikTok, Facebook (đã bỏ Instagram).
+- [x] **Bước 1 — Studio tự động:** kịch bản chia cảnh, hình/clip + giọng
+      đọc mỗi cảnh, phụ đề, nhạc nền, logo, xuất MP4.
+- [ ] **Bước 2 — App desktop Windows** (file cài `.exe`).
+- [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
+- [ ] **Bước 4 — Xuất project nháp CapCut** từ thư mục của mỗi lần chạy.
+- [ ] Xem trước video + sửa kịch bản từng cảnh ngay trên dashboard trước
+      khi dựng.
+- [ ] Phụ đề khớp từng từ (nhận dạng giọng đọc để lấy thời gian chính xác).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
-      `MetaMuseVideoProvider.generate_video()`.
+      `MetaMuseVideoProvider.generate_clip()`.
 - [ ] Quản lý danh sách chủ đề cho lịch tự động ngay trên dashboard
       (hiện truyền qua `--topic` khi khởi động).

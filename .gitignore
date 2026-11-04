@@ -12,3 +12,5 @@ youtube_token.json
 output/
 data/
 .pytest_cache/
+assets/music/*
+!assets/music/.gitkeep

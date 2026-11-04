@@ -1,14 +1,22 @@
-"""Provider registry — the single place that knows which classes exist.
+"""Provider registry — the single place that knows which engines exist.
 
-To add a new text/video/image engine later: implement TextGenerator or
-VideoGenerator in a new module here, then add one line below.
+To add a new engine later: implement the matching interface from base.py in
+a module here, then add one line to the right registry below.
 """
 
 from .anthropic_provider import AnthropicProvider
-from .base import ScriptResult, TextGenerator, VideoGenerator, VideoResult
-from .google_provider import GeminiProvider, VeoProvider
+from .base import (
+    ImageGenerator,
+    ScriptResult,
+    TextGenerator,
+    VideoGenerator,
+    VideoResult,
+    VoiceGenerator,
+)
+from .google_provider import GeminiProvider, GeminiVoiceProvider, ImagenProvider, VeoProvider
+from .local_provider import CardImageProvider, SilentVoiceProvider
 from .meta_muse_provider import MetaMuseVideoProvider, MuseSparkProvider
-from .openai_provider import OpenAIProvider
+from .openai_provider import OpenAIImageProvider, OpenAIProvider, OpenAIVoiceProvider
 
 TEXT_PROVIDERS = {
     "gpt": OpenAIProvider,
@@ -17,22 +25,41 @@ TEXT_PROVIDERS = {
     "muse": MuseSparkProvider,
 }
 
-VIDEO_PROVIDERS = {
+# Image providers are animated with a slow zoom; video providers are trimmed/looped.
+VISUAL_PROVIDERS = {
+    "card": CardImageProvider,
+    "gpt-image": OpenAIImageProvider,
+    "imagen": ImagenProvider,
     "veo": VeoProvider,
     "muse": MetaMuseVideoProvider,
 }
 
+VOICE_PROVIDERS = {
+    "gpt": OpenAIVoiceProvider,
+    "gemini": GeminiVoiceProvider,
+    "silent": SilentVoiceProvider,
+}
+
 __all__ = [
     "ScriptResult",
-    "TextGenerator",
-    "VideoGenerator",
     "VideoResult",
+    "TextGenerator",
+    "ImageGenerator",
+    "VideoGenerator",
+    "VoiceGenerator",
     "OpenAIProvider",
+    "OpenAIImageProvider",
+    "OpenAIVoiceProvider",
     "AnthropicProvider",
     "GeminiProvider",
+    "GeminiVoiceProvider",
+    "ImagenProvider",
     "VeoProvider",
     "MuseSparkProvider",
     "MetaMuseVideoProvider",
+    "CardImageProvider",
+    "SilentVoiceProvider",
     "TEXT_PROVIDERS",
-    "VIDEO_PROVIDERS",
+    "VISUAL_PROVIDERS",
+    "VOICE_PROVIDERS",
 ]

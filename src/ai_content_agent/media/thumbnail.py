@@ -1,27 +1,31 @@
 """Auto-generate a 1280x720 thumbnail: grab a frame from the rendered video
 with ffmpeg, then overlay the title with Pillow.
-
-Requires the `ffmpeg` binary on PATH (not a Python package) and Pillow.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from ai_content_agent.media.ffmpeg import run_ffmpeg
+
 _SIZE = (1280, 720)
 _BAR_HEIGHT = 200
+# Bold fonts with Vietnamese diacritics, Windows first.
+_FONT_CANDIDATES = (
+    "C:/Windows/Fonts/arialbd.ttf",
+    "C:/Windows/Fonts/segoeuib.ttf",
+    "/Library/Fonts/Arial Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+)
 
 
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
-    for candidate in (
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-    ):
+    for candidate in _FONT_CANDIDATES:
         if Path(candidate).exists():
             return ImageFont.truetype(candidate, size)
     return ImageFont.load_default(size=size)
@@ -30,18 +34,7 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 def extract_frame(video_path: str, *, at_seconds: float = 1.0) -> str:
     fd, frame_path = tempfile.mkstemp(suffix=".jpg")
     os.close(fd)
-    subprocess.run(
-        [
-            "ffmpeg", "-y",
-            "-ss", str(at_seconds),
-            "-i", video_path,
-            "-vframes", "1",
-            "-q:v", "2",
-            frame_path,
-        ],
-        check=True,
-        capture_output=True,
-    )
+    run_ffmpeg(["-ss", str(at_seconds), "-i", video_path, "-vframes", "1", "-q:v", "2", frame_path])
     return frame_path
 
 

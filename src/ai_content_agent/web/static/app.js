@@ -18,11 +18,19 @@ const JOB_STATUS = {
 };
 const STAGES = {
   setup: "Khởi tạo",
-  script: "Viết script",
+  script: "Kịch bản",
+  voice: "Giọng đọc",
+  visual: "Hình ảnh",
+  render: "Dựng video",
   video: "Tạo video",
   thumbnail: "Thumbnail",
   publish: "Đăng bài",
 };
+const ENGINE_CHIPS = [
+  ["Script", "text_provider", "text_providers"],
+  ["Hình ảnh", "visual_provider", "visual_providers"],
+  ["Giọng đọc", "voice_provider", "voice_providers"],
+];
 
 let token = null;
 let configLoaded = false;
@@ -128,21 +136,15 @@ function publishLinks(publishes) {
 // ---------- renderers ----------
 
 function renderConfig(cfg) {
-  const chips = $("provider-chips");
-  const text = cfg.text_providers[cfg.text_provider];
-  const video = cfg.video_providers[cfg.video_provider];
-  chips.replaceChildren(
-    el("span", {
-      class: `chip ${text && text.ready ? "on" : "off"}`,
-      title: text && text.note,
-      text: `Script: ${cfg.text_provider}`,
-    }),
-    el("span", {
-      class: `chip ${video && video.ready ? "on" : "off"}`,
-      title: video && video.note,
-      text: `Video: ${cfg.video_provider}`,
-    }),
-  );
+  $("provider-chips").replaceChildren(...ENGINE_CHIPS.map(([label, key, group]) => {
+    const name = cfg[key];
+    const info = (cfg[group] || {})[name];
+    return el("span", {
+      class: `chip ${info && info.ready ? "on" : "off"}`,
+      title: info ? info.note : "Engine không hợp lệ",
+      text: `${label}: ${name}`,
+    });
+  }));
 
   const container = $("platforms");
   container.replaceChildren(...Object.entries(cfg.platforms).map(([name, info]) => {
@@ -202,10 +204,12 @@ function renderJobs(jobs) {
       job.dry_run ? "chạy thử" : platforms,
       formatTime(job.finished_at || job.started_at || job.created_at),
     ].join(" · ");
+    const stage = job.failed_stage ? `Lỗi ở bước ${STAGES[job.failed_stage] || job.failed_stage}: ` : "";
     return el("li", { class: "job" }, [
       el("div", { class: "job-head" }, [el("span", { class: "job-topic", text: job.topic }), badge(job.status)]),
       el("div", { class: "job-meta", text: meta }),
-      job.error ? el("div", { class: "job-error", text: job.error }) : null,
+      job.error ? el("div", { class: "job-error", text: stage + job.error }) : null,
+      job.video_path ? el("div", { class: "job-meta job-path", text: `Video: ${job.video_path}` }) : null,
       job.results.length ? el("div", { class: "job-links" }, publishLinks(job.results)) : null,
     ]);
   }));

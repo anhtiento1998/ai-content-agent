@@ -18,6 +18,7 @@ from typing import Callable
 
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
+from ai_content_agent.studio import StudioStageError
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ class Job:
     started_at: str | None = None
     finished_at: str | None = None
     results: list[dict] = field(default_factory=list)
+    video_path: str | None = None
     error: str | None = None
+    failed_stage: str | None = None
 
 
 class JobManager:
@@ -97,27 +100,36 @@ class JobManager:
             try:
                 pipeline = self._factory(job.platforms)
             except Exception as exc:
+                job.failed_stage = "setup"
                 if self._history:
                     self._history.record_error(job.topic, "setup", f"{type(exc).__name__}: {exc}")
                 raise
 
-            if not job.force and pipeline.is_duplicate(job.topic):
+            outcome = pipeline.run(job.topic, style=job.style, dry_run=job.dry_run, force=job.force)
+            if outcome.skipped:
                 job.status = "skipped"
                 job.error = "Topic này đã được đăng gần đây — bật “Đăng lại” để bỏ qua kiểm tra trùng."
                 return
 
-            results = pipeline.run(job.topic, style=job.style, dry_run=job.dry_run, force=job.force)
-            job.results = [{"platform": r.platform, "remote_id": r.remote_id, "url": r.url} for r in results]
-
+            job.video_path = outcome.video.file_path if outcome.video else None
+            job.results = [
+                {"platform": r.platform, "remote_id": r.remote_id, "url": r.url} for r in outcome.published
+            ]
             if job.dry_run:
                 job.status = "succeeded"
-            elif not results:
+            elif not outcome.published:
                 job.status = "failed"
+                job.failed_stage = "publish"
                 job.error = "Đăng thất bại trên mọi nền tảng — xem mục Lỗi gần đây."
-            elif len(results) < len(job.platforms):
+            elif len(outcome.published) < len(job.platforms):
                 job.status = "partial"
             else:
                 job.status = "succeeded"
+        except StudioStageError as exc:
+            logger.exception("Job %s failed at stage %s", job.id, exc.stage)
+            job.status = "failed"
+            job.failed_stage = exc.stage
+            job.error = str(exc)
         except Exception as exc:
             logger.exception("Job %s failed", job.id)
             job.status = "failed"

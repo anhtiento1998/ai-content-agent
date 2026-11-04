@@ -1,8 +1,8 @@
-"""Claude (Anthropic) text/script generation."""
+"""Claude (Anthropic) text generation."""
 
 from __future__ import annotations
 
-from .base import ScriptResult, TextGenerator, build_script_prompt, parse_script_json
+from .base import TextGenerator
 
 
 class AnthropicProvider(TextGenerator):
@@ -14,10 +14,10 @@ class AnthropicProvider(TextGenerator):
         self._client = Anthropic(api_key=api_key)
         self._model = model
 
-    def generate_script(self, topic: str, *, style: str = "", max_words: int = 150) -> ScriptResult:
+    def complete(self, prompt: str) -> str:
         response = self._client.messages.create(
             model=self._model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": build_script_prompt(topic, style, max_words)}],
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
         )
-        return parse_script_json(response.content[0].text)
+        return response.content[0].text

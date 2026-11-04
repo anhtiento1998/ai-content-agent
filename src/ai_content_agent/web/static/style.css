@@ -116,6 +116,7 @@ input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); ou
 .job-topic { font-weight: 600; overflow-wrap: anywhere; }
 .job-meta { color: var(--muted); font-size: 0.8rem; margin-top: 2px; }
 .job-error { color: var(--bad); font-size: 0.85rem; margin-top: 6px; overflow-wrap: anywhere; }
+.job-path { overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.75rem; }
 .job-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 0.85rem; }
 
 .badge { display: inline-block; white-space: nowrap; padding: 1px 8px; border-radius: 999px; font-size: 0.78rem; font-weight: 600; }

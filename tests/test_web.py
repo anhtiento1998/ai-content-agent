@@ -1,7 +1,7 @@
 """Dashboard API tests — fake pipeline, FastAPI TestClient, no network calls."""
 
 import pytest
-from fakes import FakePublisher, FakeText, FakeVideo
+from fakes import FakePublisher, FakeStudio
 from fastapi.testclient import TestClient
 
 from ai_content_agent.config import Config
@@ -16,23 +16,11 @@ AUTH = {"Authorization": f"Bearer {TOKEN}"}
 
 def _config(**overrides):
     values = dict(
-        openai_api_key=None,
         anthropic_api_key="sk-ant-SECRET-VALUE",
-        google_api_key=None,
-        meta_model_api_key=None,
-        meta_model_api_base_url=None,
+        tiktok_access_token="tiktok-SECRET-VALUE",
         youtube_token_file="missing_token.json",
         youtube_client_secret_file="missing_secret.json",
-        tiktok_access_token="tiktok-SECRET-VALUE",
-        tiktok_privacy_level="SELF_ONLY",
-        facebook_page_id=None,
-        facebook_access_token=None,
-        text_provider="claude",
-        video_provider="veo",
-        history_db_path="unused.db",
-        dedup_window_days=30,
         make_thumbnails=False,
-        dashboard_token=None,
     )
     values.update(overrides)
     return Config(**values)
@@ -41,14 +29,13 @@ def _config(**overrides):
 @pytest.fixture
 def env(tmp_path):
     history = HistoryStore(str(tmp_path / "history.db"))
-    state = {"failing": set(), "factory_error": None}
+    state = {"failing": set(), "factory_error": None, "studio_fail_stage": None}
 
     def factory(platforms):
         if state["factory_error"]:
             raise state["factory_error"]
         return ContentPipeline(
-            FakeText(),
-            FakeVideo(str(tmp_path / "video.mp4")),
+            FakeStudio(str(tmp_path / "video.mp4"), fail_stage=state["studio_fail_stage"]),
             [FakePublisher(name=p, fail=p in state["failing"]) for p in platforms],
             history=history,
             make_thumbnails=False,
@@ -125,13 +112,26 @@ def test_duplicate_topic_is_skipped_unless_forced(env):
     assert _run(client, jobs, force=True)["status"] == "succeeded"
 
 
-def test_dry_run_needs_no_platform_and_records_nothing(env):
+def test_dry_run_needs_no_platform_and_records_nothing(env, tmp_path):
     client, jobs, _ = env
 
     job = _run(client, jobs, platforms=[], dry_run=True)
 
     assert job["status"] == "succeeded"
+    assert job["video_path"] == str(tmp_path / "video.mp4")
     assert client.get("/api/runs", headers=AUTH).json() == []
+
+
+def test_studio_failure_reports_the_failed_stage(env):
+    client, jobs, state = env
+    state["studio_fail_stage"] = "voice"
+
+    job = _run(client, jobs)
+
+    assert (job["status"], job["failed_stage"]) == ("failed", "voice")
+    assert job["error"] == "scene 1: RuntimeError: voice broke"
+    [error] = client.get("/api/errors", headers=AUTH).json()
+    assert error["stage"] == "voice"
 
 
 def test_setup_failure_is_logged(env):
@@ -140,7 +140,7 @@ def test_setup_failure_is_logged(env):
 
     job = _run(client, jobs)
 
-    assert job["status"] == "failed"
+    assert (job["status"], job["failed_stage"]) == ("failed", "setup")
     assert "ANTHROPIC_API_KEY missing" in job["error"]
     [error] = client.get("/api/errors", headers=AUTH).json()
     assert error["stage"] == "setup"
@@ -171,7 +171,9 @@ def test_config_endpoint_never_leaks_secrets(env):
     assert cfg["text_providers"]["claude"]["ready"] is True
     assert cfg["platforms"]["tiktok"]["ready"] is True
     assert cfg["platforms"]["youtube"]["ready"] is False
-    assert cfg["video_providers"]["muse"]["ready"] is False
+    assert cfg["visual_providers"]["muse"]["ready"] is False
+    assert cfg["visual_providers"]["card"]["ready"] is True
+    assert (cfg["text_provider"], cfg["visual_provider"], cfg["voice_provider"]) == ("claude", "imagen", "gemini")
 
 
 def test_schedule_disabled_by_default(env):
@@ -189,6 +191,20 @@ def test_muse_spark_requires_base_url():
 def test_muse_video_fails_fast(tmp_path):
     from ai_content_agent.agent import ContentAgent
 
-    config = _config(video_provider="muse", history_db_path=str(tmp_path / "h.db"))
+    config = _config(visual_provider="muse", history_db_path=str(tmp_path / "h.db"))
     with pytest.raises(NotImplementedError):
         ContentAgent(config).build_pipeline(["youtube"])
+
+
+def test_config_from_env_maps_field_names_and_types(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)  # no stray .env gets loaded
+    monkeypatch.setenv("VISUAL_PROVIDER", "card")
+    monkeypatch.setenv("TARGET_SECONDS", "25")
+    monkeypatch.setenv("MAKE_THUMBNAILS", "false")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+
+    config = Config.from_env()
+
+    assert (config.visual_provider, config.target_seconds, config.make_thumbnails) == ("card", 25, False)
+    assert config.openai_api_key is None
+    assert config.voice_provider == "gemini"

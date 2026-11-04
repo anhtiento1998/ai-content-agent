@@ -54,11 +54,18 @@ def main() -> None:
     if args.command == "run":
         from ai_content_agent.publishers import PUBLISHERS
 
-        platforms = args.platforms or list(PUBLISHERS)
+        platforms = args.platforms or ([] if args.dry_run else list(PUBLISHERS))
         pipeline = agent.build_pipeline(platforms)
-        results = pipeline.run(args.topic, style=args.style, dry_run=args.dry_run, force=args.force)
-        for result in results:
+        outcome = pipeline.run(args.topic, style=args.style, dry_run=args.dry_run, force=args.force)
+        if outcome.skipped:
+            print("Skipped: this topic was already published recently (use --force to post again).")
+            return
+        print(f"Video: {outcome.video.file_path} ({outcome.video.duration_seconds:.1f}s)")
+        for result in outcome.published:
             print(f"{result.platform}: {result.url or result.remote_id}")
+        failed = set(platforms) - {r.platform for r in outcome.published}
+        if failed and not args.dry_run:
+            print(f"Failed: {', '.join(sorted(failed))} (see `ai-content-agent history` / dashboard errors)")
 
     elif args.command == "schedule":
         from ai_content_agent.pipeline.scheduler import run_forever
