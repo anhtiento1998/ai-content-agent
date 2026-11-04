@@ -1,7 +1,8 @@
 """Top-level agent: wires config -> engines -> studio -> publishers -> pipeline.
 
 This is the single object a caller (CLI, scheduler, web dashboard) needs to
-construct and run.
+construct and run. Engine classes come from the registries in
+providers/__init__.py; this module only knows which credentials each needs.
 """
 
 from __future__ import annotations
@@ -9,29 +10,18 @@ from __future__ import annotations
 from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
-from ai_content_agent.providers import (
-    AnthropicProvider,
-    CardImageProvider,
-    GeminiProvider,
-    GeminiVoiceProvider,
-    ImagenProvider,
-    MetaMuseVideoProvider,
-    MuseSparkProvider,
-    OpenAIImageProvider,
-    OpenAIProvider,
-    OpenAIVoiceProvider,
-    SilentVoiceProvider,
-    VeoProvider,
-)
+from ai_content_agent.providers import TEXT_PROVIDERS, VISUAL_PROVIDERS, VOICE_PROVIDERS
 from ai_content_agent.publishers import FacebookPublisher, TikTokPublisher, YouTubePublisher
 from ai_content_agent.publishers.base import Publisher
 from ai_content_agent.studio import StudioSettings, VideoStudio
 
 
-def _optional(**kwargs) -> dict:
-    """Pass model/voice overrides only when set, so each provider keeps its own default."""
-
-    return {key: value for key, value in kwargs.items() if value}
+def _build(kind: str, registry: dict, name: str, credentials: dict, overrides: dict):
+    if name not in registry:
+        raise ValueError(f"Unknown {kind}: {name!r} — choose one of {', '.join(registry)}")
+    # Offline engines take no credentials, so model/voice overrides only apply to API engines.
+    extra = {k: v for k, v in overrides.items() if v} if name in credentials else {}
+    return registry[name](**credentials.get(name, {}), **extra)
 
 
 class ContentAgent:
@@ -40,42 +30,30 @@ class ContentAgent:
 
     def _build_text_generator(self):
         c = self._config
-        extra = _optional(model=c.text_model)
-        if c.text_provider == "gpt":
-            return OpenAIProvider(api_key=c.openai_api_key, **extra)
-        if c.text_provider == "claude":
-            return AnthropicProvider(api_key=c.anthropic_api_key, **extra)
-        if c.text_provider == "gemini":
-            return GeminiProvider(api_key=c.google_api_key, **extra)
-        if c.text_provider == "muse":
-            return MuseSparkProvider(api_key=c.meta_model_api_key, base_url=c.meta_model_api_base_url, **extra)
-        raise ValueError(f"Unknown TEXT_PROVIDER: {c.text_provider!r}")
+        credentials = {
+            "gpt": {"api_key": c.openai_api_key},
+            "claude": {"api_key": c.anthropic_api_key},
+            "gemini": {"api_key": c.google_api_key},
+            "muse": {"api_key": c.meta_model_api_key, "base_url": c.meta_model_api_base_url},
+        }
+        return _build("TEXT_PROVIDER", TEXT_PROVIDERS, c.text_provider, credentials, {"model": c.text_model})
 
     def _build_visual_generator(self):
         c = self._config
-        extra = _optional(model=c.visual_model)
-        if c.visual_provider == "card":
-            return CardImageProvider()
-        if c.visual_provider == "gpt-image":
-            return OpenAIImageProvider(api_key=c.openai_api_key, **extra)
-        if c.visual_provider == "imagen":
-            return ImagenProvider(api_key=c.google_api_key, **extra)
-        if c.visual_provider == "veo":
-            return VeoProvider(api_key=c.google_api_key, **extra)
-        if c.visual_provider == "muse":
-            return MetaMuseVideoProvider()
-        raise ValueError(f"Unknown VISUAL_PROVIDER: {c.visual_provider!r}")
+        credentials = {
+            "gpt-image": {"api_key": c.openai_api_key},
+            "imagen": {"api_key": c.google_api_key},
+            "veo": {"api_key": c.google_api_key},
+        }
+        return _build("VISUAL_PROVIDER", VISUAL_PROVIDERS, c.visual_provider, credentials, {"model": c.visual_model})
 
     def _build_voice_generator(self):
         c = self._config
-        extra = _optional(model=c.voice_model, voice=c.voice_name)
-        if c.voice_provider == "gpt":
-            return OpenAIVoiceProvider(api_key=c.openai_api_key, **extra)
-        if c.voice_provider == "gemini":
-            return GeminiVoiceProvider(api_key=c.google_api_key, **extra)
-        if c.voice_provider == "silent":
-            return SilentVoiceProvider()
-        raise ValueError(f"Unknown VOICE_PROVIDER: {c.voice_provider!r}")
+        credentials = {"gpt": {"api_key": c.openai_api_key}, "gemini": {"api_key": c.google_api_key}}
+        return _build(
+            "VOICE_PROVIDER", VOICE_PROVIDERS, c.voice_provider, credentials,
+            {"model": c.voice_model, "voice": c.voice_name},
+        )
 
     def build_studio(self) -> VideoStudio:
         c = self._config
@@ -90,6 +68,7 @@ class ContentAgent:
                 music_dir=c.music_dir,
                 logo_path=c.brand_logo_path,
                 font=c.subtitle_font,
+                keep_intermediates=c.keep_intermediates,
             ),
         )
 

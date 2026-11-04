@@ -1,8 +1,9 @@
 """Publish to YouTube (Shorts) via the YouTube Data API v3.
 
-Requires a Google Cloud project with the YouTube Data API enabled, OAuth
-client credentials (client_secret.json) and a one-time user consent flow
-that produces a cached token — see README.md "YouTube setup".
+Requires a Google Cloud project with the YouTube Data API enabled and OAuth
+client credentials (client_secret.json). Consent is a one-time interactive
+step (`ai-content-agent youtube-auth`, needs a browser); publishing itself
+never opens a browser, so it cannot hang in a background job or on a server.
 """
 
 from __future__ import annotations
@@ -13,6 +14,18 @@ from .base import Publisher, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
 logger = logging.getLogger(__name__)
+
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+
+
+def authorize(token_file: str, client_secret_file: str) -> None:
+    """Interactive consent: opens a browser and caches the refreshable token in `token_file`."""
+
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    creds = InstalledAppFlow.from_client_secrets_file(client_secret_file, SCOPES).run_local_server(port=0)
+    with open(token_file, "w", encoding="utf-8") as f:
+        f.write(creds.to_json())
 
 
 class YouTubePublisher(Publisher):
@@ -25,23 +38,21 @@ class YouTubePublisher(Publisher):
     def _get_service(self):
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
         from googleapiclient.discovery import build
 
-        scopes = ["https://www.googleapis.com/auth/youtube.upload"]
-        creds = None
         try:
-            creds = Credentials.from_authorized_user_file(self._token_file, scopes)
+            creds = Credentials.from_authorized_user_file(self._token_file, SCOPES)
         except FileNotFoundError:
-            pass
+            creds = None
 
         if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(self._client_secret_file, scopes)
-                creds = flow.run_local_server(port=0)
-            with open(self._token_file, "w") as f:
+            if not (creds and creds.expired and creds.refresh_token):
+                raise RuntimeError(
+                    f"No valid YouTube token in {self._token_file} — run `ai-content-agent youtube-auth` "
+                    "once on a machine with a browser, then copy the token file here if needed"
+                )
+            creds.refresh(Request())
+            with open(self._token_file, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
 
         return build("youtube", "v3", credentials=creds)

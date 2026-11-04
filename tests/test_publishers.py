@@ -108,3 +108,21 @@ def test_facebook_graph_error_raises_with_api_message(monkeypatch, video):
 
     with pytest.raises(RuntimeError, match="190.*Error validating access token"):
         FacebookPublisher("page", "token").publish(video, SCRIPT)
+
+
+def test_facebook_uploads_to_graph_video_host(monkeypatch, video):
+    fake = FakeRequests({"id": "1"})
+    monkeypatch.setattr(facebook_publisher, "requests", fake)
+
+    FacebookPublisher("page", "token").publish(video, SCRIPT)
+
+    assert fake.posts[0][0].startswith("https://graph-video.facebook.com/")
+
+
+def test_youtube_without_token_fails_fast_instead_of_opening_a_browser(tmp_path, video):
+    from ai_content_agent.publishers.youtube_publisher import YouTubePublisher
+
+    publisher = YouTubePublisher(str(tmp_path / "missing_token.json"), str(tmp_path / "client_secret.json"))
+
+    with pytest.raises(RuntimeError, match="youtube-auth"):
+        publisher.publish(video, SCRIPT)

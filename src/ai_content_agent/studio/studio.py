@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -30,6 +31,11 @@ from ai_content_agent.utils import slugify
 
 logger = logging.getLogger(__name__)
 _MUSIC_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+_TRANSIENT_STATUS = {408, 429, 500, 502, 503, 504, 529}  # 529 = Anthropic "overloaded"
+_TRANSIENT_NAMES = {"APIConnectionError", "APITimeoutError", "RateLimitError", "ServiceUnavailable"}
+# Kept after a successful render: inputs a desktop editor needs to rebuild the
+# edit (storyboard, per-scene visuals and voice, captions) plus the outputs.
+_KEEP_PATTERNS = ("storyboard.json", "scene_*_visual.*", "scene_??_voice.wav", "subtitles.ass", "final.mp4", "thumbnail.jpg")
 
 
 @dataclass
@@ -42,6 +48,9 @@ class StudioSettings:
     font: str = "Arial"
     scene_padding: float = 0.35
     max_workers: int = 4
+    retry_attempts: int = 3
+    retry_base_delay: float = 4.0
+    keep_intermediates: bool = False
 
 
 class StudioStageError(RuntimeError):
@@ -50,6 +59,15 @@ class StudioStageError(RuntimeError):
     def __init__(self, stage: str, message: str) -> None:
         super().__init__(message)
         self.stage = stage
+
+
+def _is_transient(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
+    return (
+        (isinstance(status, int) and status in _TRANSIENT_STATUS)
+        or isinstance(exc, (ConnectionError, TimeoutError))
+        or type(exc).__name__ in _TRANSIENT_NAMES
+    )
 
 
 def _await(future: Future, stage: str, index: int):
@@ -78,6 +96,20 @@ class VideoStudio:
     def engine_names(self) -> dict:
         return {"text": self._writer.name, "visual": self._visuals.name, "voice": self._voice.name}
 
+    def _with_retries(self, fn, *args, **kwargs):
+        """Retry rate limits, 5xx and connection errors with exponential backoff; fail fast otherwise."""
+
+        attempts = max(1, self._settings.retry_attempts)
+        for attempt in range(1, attempts + 1):
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                if attempt == attempts or not _is_transient(exc):
+                    raise
+                delay = self._settings.retry_base_delay * 2 ** (attempt - 1)
+                logger.warning("Transient %s (attempt %d/%d), retrying in %.0fs", type(exc).__name__, attempt, attempts, delay)
+                time.sleep(delay)
+
     def produce(self, topic: str, *, style: str = "") -> tuple[Storyboard, VideoResult]:
         storyboard = self.write_storyboard(topic, style=style)
         return storyboard, self.render(storyboard)
@@ -85,7 +117,8 @@ class VideoStudio:
     def write_storyboard(self, topic: str, *, style: str = "") -> Storyboard:
         logger.info("Writing storyboard for topic=%r via %s", topic, self._writer.name)
         try:
-            return write_storyboard(
+            return self._with_retries(
+                write_storyboard,
                 self._writer,
                 topic,
                 style=style,
@@ -145,6 +178,8 @@ class VideoStudio:
         except Exception as exc:
             raise StudioStageError("render", f"{type(exc).__name__}: {exc}") from exc
 
+        if not self._settings.keep_intermediates:
+            self._remove_intermediates(work)
         logger.info("Rendered %.1fs video: %s", total, work / "final.mp4")
         return VideoResult(
             file_path=str(work / "final.mp4"),
@@ -155,17 +190,18 @@ class VideoStudio:
     def _generate_assets(self, scenes, visual_files: list[str], work: Path, is_video: bool) -> list[float]:
         """Voice and visual for every scene, concurrently — these are the slow API calls."""
 
+        visual_slots = threading.Semaphore(self._visuals.max_concurrency or self._settings.max_workers)
+
         def make_voice(i: int, text: str) -> float:
             raw, clean = f"scene_{i:02d}_voice_raw.wav", f"scene_{i:02d}_voice.wav"
-            self._voice.synthesize(text, str(work / raw))
+            self._with_retries(self._voice.synthesize, text, str(work / raw))
             render.normalize_audio(raw, clean, cwd=str(work))
             return wav_duration(str(work / clean))
 
         def make_visual(prompt: str, name: str) -> None:
-            if is_video:
-                self._visuals.generate_clip(prompt, str(work / name))
-            else:
-                self._visuals.generate_image(prompt, str(work / name))
+            generate = self._visuals.generate_clip if is_video else self._visuals.generate_image
+            with visual_slots:
+                self._with_retries(generate, prompt, str(work / name))
 
         pool = ThreadPoolExecutor(max_workers=self._settings.max_workers, thread_name_prefix="studio")
         try:
@@ -179,6 +215,13 @@ class VideoStudio:
             raise
         pool.shutdown()
         return durations
+
+    @staticmethod
+    def _remove_intermediates(work: Path) -> None:
+        keep = {path for pattern in _KEEP_PATTERNS for path in work.glob(pattern)}
+        for path in work.iterdir():
+            if path.is_file() and path not in keep:
+                path.unlink()
 
     def _new_work_dir(self, title: str) -> Path:
         base = Path(self._settings.output_dir).resolve()

@@ -48,6 +48,10 @@ class ContentPipeline:
     def publisher_names(self) -> list[str]:
         return [p.name for p in self._publishers]
 
+    @property
+    def dedup_window_days(self) -> int:
+        return self._dedup_window_days
+
     def is_duplicate(self, topic: str) -> bool:
         return bool(self._history) and self._history.has_recent_topic(topic, within_days=self._dedup_window_days)
 

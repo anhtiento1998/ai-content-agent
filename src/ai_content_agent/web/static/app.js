@@ -18,6 +18,7 @@ const JOB_STATUS = {
 };
 const STAGES = {
   setup: "Khởi tạo",
+  schedule: "Lịch tự động",
   script: "Kịch bản",
   voice: "Giọng đọc",
   visual: "Hình ảnh",
@@ -185,7 +186,7 @@ function renderSchedule(schedule) {
   box.replaceChildren(el("dl", { class: "schedule-grid" }, [
     ...row("Cron", schedule.cron),
     ...row("Lần chạy tới", `${formatTime(schedule.next_run_at)} (${relativeTime(schedule.next_run_at)})`),
-    ...row("Chủ đề tiếp theo", schedule.next_topic),
+    ...row("Chủ đề tiếp theo", schedule.next_topic || "Hết chủ đề mới — mọi chủ đề đã đăng gần đây, hãy thêm chủ đề"),
     ...row("Nền tảng", schedule.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ")),
     ...row("Danh sách chủ đề", `${schedule.topics.length} chủ đề, xoay vòng`),
   ]));

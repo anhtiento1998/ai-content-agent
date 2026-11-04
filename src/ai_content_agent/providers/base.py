@@ -34,6 +34,8 @@ class VideoResult:
 def parse_json_object(text: str) -> dict:
     """Parse a model's JSON reply, tolerating ```json fences or stray prose around it."""
 
+    if not text:
+        raise ValueError("Model returned no text (the request may have been refused or safety-blocked)")
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         candidate = fenced.group(1)
@@ -59,6 +61,7 @@ class ImageGenerator(ABC):
     """Still image per scene; the studio animates it with a slow zoom."""
 
     name: str
+    max_concurrency: int | None = None
 
     @abstractmethod
     def generate_image(self, prompt: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
@@ -69,6 +72,7 @@ class VideoGenerator(ABC):
     """Short video clip per scene; the studio trims or loops it to the narration length."""
 
     name: str
+    max_concurrency: int | None = None
 
     @abstractmethod
     def generate_clip(self, prompt: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:

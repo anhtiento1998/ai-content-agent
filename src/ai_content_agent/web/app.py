@@ -11,7 +11,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -57,6 +57,7 @@ class ScheduleInfo:
     platforms: list[str]
     rotation: TopicRotation
     scheduler: object
+    skip: Callable[[str], bool] = lambda _topic: False
 
 
 def create_app(
@@ -125,7 +126,7 @@ def create_app(
             "cron": schedule.cron,
             "platforms": schedule.platforms,
             "topics": schedule.rotation.topics,
-            "next_topic": schedule.rotation.peek(),
+            "next_topic": schedule.rotation.peek(skip=schedule.skip),
             "next_run_at": next_run.isoformat() if next_run else None,
         }
 

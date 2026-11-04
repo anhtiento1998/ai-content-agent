@@ -125,3 +125,18 @@ def test_generate_thumbnail(tmp_path):
 
     with Image.open(out) as img:
         assert img.size == (1280, 720)
+
+
+def test_rotation_skips_recently_published_topics():
+    from ai_content_agent.pipeline.scheduler import TopicRotation
+
+    rotation = TopicRotation(["A", "B", "C"])
+    published = {"A"}
+
+    assert rotation.peek(skip=published.__contains__) == "B"
+    assert rotation.next(skip=published.__contains__) == "B"
+    published.update({"B", "C"})
+    assert rotation.next(skip=published.__contains__) is None
+    assert rotation.peek(skip=published.__contains__) is None
+    published.clear()
+    assert rotation.next(skip=published.__contains__) == "C"

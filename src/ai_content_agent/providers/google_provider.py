@@ -50,6 +50,7 @@ class VeoProvider(VideoGenerator):
     """One Veo call per scene — the most expensive visual option; check your quota."""
 
     name = "veo"
+    max_concurrency = 2  # Veo quotas allow few concurrent long-running generations
 
     def __init__(self, api_key: str, model: str = "veo-3.0-generate-001", poll_seconds: int = 10) -> None:
         from google import genai
@@ -98,7 +99,12 @@ class GeminiVoiceProvider(VoiceGenerator):
                 ),
             ),
         )
-        pcm = response.candidates[0].content.parts[0].inline_data.data
+        try:
+            pcm = response.candidates[0].content.parts[0].inline_data.data
+        except (AttributeError, IndexError, TypeError):
+            pcm = None
+        if not pcm:
+            raise RuntimeError("Gemini TTS returned no audio (text may have been blocked or the model is unavailable)")
         # Gemini TTS returns raw 16-bit mono PCM at 24 kHz.
         with wave.open(out_path, "wb") as wav:
             wav.setnchannels(1)

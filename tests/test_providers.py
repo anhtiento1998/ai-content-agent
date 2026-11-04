@@ -70,3 +70,22 @@ def test_silent_voice_length_tracks_word_count(tmp_path):
 
     assert seconds("short.wav") == pytest.approx(1.5)
     assert seconds("long.wav") == pytest.approx(10.0)
+
+
+@pytest.mark.parametrize("reply", [None, ""])
+def test_parse_json_object_explains_empty_replies(reply):
+    with pytest.raises(ValueError, match="no text"):
+        parse_json_object(reply)
+
+
+def test_agent_builds_engines_from_registries_and_rejects_unknown(tmp_path):
+    from ai_content_agent.agent import ContentAgent
+    from ai_content_agent.config import Config
+
+    config = Config(anthropic_api_key="k", visual_provider="card", voice_provider="silent",
+                    visual_model="ignored-for-offline", voice_name="ignored", history_db_path=str(tmp_path / "h.db"))
+    studio = ContentAgent(config).build_studio()
+    assert studio.engine_names == {"text": "claude", "visual": "card", "voice": "silent"}
+
+    with pytest.raises(ValueError, match="Unknown VISUAL_PROVIDER"):
+        ContentAgent(Config(visual_provider="dalle")).build_studio()

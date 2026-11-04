@@ -9,7 +9,7 @@ import secrets
 from ai_content_agent.agent import ContentAgent
 from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
-from ai_content_agent.pipeline.scheduler import TopicRotation, start_background
+from ai_content_agent.pipeline.scheduler import ALL_TOPICS_USED, TopicRotation, start_background
 from ai_content_agent.web.app import ScheduleInfo, create_app
 from ai_content_agent.web.jobs import JobManager
 
@@ -44,11 +44,24 @@ def serve(
     if cron:
         rotation = TopicRotation(topics or [])
 
+        def recently_published(topic: str) -> bool:
+            return history.has_recent_topic(topic, within_days=config.dedup_window_days)
+
         def _scheduled() -> None:
-            jobs.submit(rotation.next(), platforms or [], source="schedule")
+            topic = rotation.next(skip=recently_published)
+            if topic is None:
+                message = ALL_TOPICS_USED.format(days=config.dedup_window_days)
+                logger.warning(message)
+                history.record_error("(lịch tự động)", "schedule", message)
+                return
+            jobs.submit(topic, platforms or [], source="schedule")
 
         schedule = ScheduleInfo(
-            cron=cron, platforms=list(platforms or []), rotation=rotation, scheduler=start_background(_scheduled, cron)
+            cron=cron,
+            platforms=list(platforms or []),
+            rotation=rotation,
+            scheduler=start_background(_scheduled, cron),
+            skip=recently_published,
         )
 
     token = config.dashboard_token or secrets.token_urlsafe(24)

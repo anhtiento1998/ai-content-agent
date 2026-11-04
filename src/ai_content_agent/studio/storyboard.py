@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 
 from ai_content_agent.providers.base import ScriptResult, TextGenerator, parse_json_object
@@ -85,6 +86,8 @@ def parse_storyboard(text: str) -> Storyboard:
         raise ValueError("storyboard scenes are not objects")
 
     hashtags = data.get("hashtags") or []
+    if isinstance(hashtags, str):
+        hashtags = re.split(r"[,\s]+", hashtags)
     return Storyboard(
         title=_text(data.get("title"), "title")[:100],
         description=_text(data.get("description"), "description", required=False),

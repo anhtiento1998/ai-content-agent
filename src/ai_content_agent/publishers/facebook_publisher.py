@@ -12,7 +12,8 @@ import requests
 from .base import Publisher, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
-_GRAPH = "https://graph.facebook.com/v23.0"
+# Video file uploads go to the graph-video host, per Meta's Page video publishing docs.
+_GRAPH_VIDEO = "https://graph-video.facebook.com/v23.0"
 
 
 class FacebookPublisher(Publisher):
@@ -26,7 +27,7 @@ class FacebookPublisher(Publisher):
         description = script.script + "\n\n" + " ".join(f"#{h}" for h in script.hashtags)
         with open(video.file_path, "rb") as f:
             resp = requests.post(
-                f"{_GRAPH}/{self._page_id}/videos",
+                f"{_GRAPH_VIDEO}/{self._page_id}/videos",
                 params={"access_token": self._access_token},
                 data={"description": description.strip(), "title": script.title[:100]},
                 files={"source": f},

@@ -34,9 +34,16 @@ Storyboard {title, description, hashtags, scenes[{narration, visual_prompt, on_s
 ```
 
 Mỗi lần chạy có 1 thư mục riêng `output/<tên>_<thời gian>/` chứa
-`storyboard.json`, từng file giọng/hình/cảnh, `subtitles.ass`,
-`final.mp4`, `thumbnail.jpg` — để kiểm tra lại, dựng lại, hoặc (sắp tới)
-xuất sang CapCut chỉnh tay.
+`storyboard.json`, ảnh/clip và giọng đọc từng cảnh, `subtitles.ass`,
+`final.mp4`, `thumbnail.jpg` — để kiểm tra lại hoặc (sắp tới) xuất sang
+CapCut chỉnh tay. File trung gian (WAV đệm, từng đoạn cảnh đã encode) tự
+xóa sau khi dựng xong để không đầy ổ đĩa; đặt `KEEP_INTERMEDIATES=true`
+nếu cần giữ để debug.
+
+Lỗi tạm thời của API (429 quá tải/hết quota tạm, 5xx, 529, rớt mạng) được
+**tự thử lại** tối đa 3 lần với thời gian chờ tăng dần; lỗi vĩnh viễn (sai
+key, prompt bị chặn) báo ngay. Veo bị giới hạn 2 clip chạy song song để
+không vượt quota.
 
 - `src/ai_content_agent/providers/` — adapter cho từng AI: 4 interface
   `TextGenerator`, `ImageGenerator`, `VideoGenerator`, `VoiceGenerator`
@@ -168,7 +175,10 @@ Terminal sẽ in ra link dạng `http://127.0.0.1:8000/#token=...` — mở link
 định thì đặt `DASHBOARD_TOKEN` trong `.env`.
 
 Chạy dashboard kèm lịch tự động (lịch chạy ngay trong tiến trình
-dashboard, xoay vòng qua danh sách chủ đề):
+dashboard, xoay vòng qua danh sách chủ đề, **tự bỏ qua chủ đề đã đăng
+trong `DEDUP_WINDOW_DAYS` ngày**; khi mọi chủ đề đều đã đăng gần đây, lần
+chạy được ghi vào mục Lỗi với hướng dẫn thêm chủ đề — nên danh sách chủ đề
+cần dài hơn số ngày của cửa sổ chống trùng nếu đăng mỗi ngày):
 
 ```bash
 ai-content-agent dashboard --cron "0 9 * * *" --topic "Chủ đề 1" --topic "Chủ đề 2" --platform youtube --platform tiktok
@@ -196,8 +206,14 @@ hãy đặt sau reverse proxy có HTTPS để token không bị gửi dạng pla
 1. Tạo project trên Google Cloud Console, enable **YouTube Data API v3**.
 2. Tạo OAuth client ID (loại *Desktop app*), tải `client_secret.json` về
    gốc project.
-3. Lần chạy đầu sẽ mở browser để bạn consent; token được lưu vào
-   `youtube_token.json` và tự refresh các lần sau.
+3. Chạy 1 lần trên máy có trình duyệt:
+   ```bash
+   ai-content-agent youtube-auth
+   ```
+   Token được lưu vào `youtube_token.json` và tự làm mới các lần sau. Khi
+   đăng bài app **không bao giờ** mở trình duyệt (để không bị treo trên
+   server); nếu thiếu token, job báo lỗi kèm hướng dẫn chạy lệnh trên. Chạy
+   trên VPS thì xác thực ở máy bạn rồi copy file token lên.
 
 ### TikTok
 1. Tạo app trên [TikTok for Developers](https://developers.tiktok.com/),

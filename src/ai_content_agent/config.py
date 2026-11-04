@@ -30,6 +30,7 @@ class Config:
     music_dir: str = "assets/music"
     brand_logo_path: str | None = None
     subtitle_font: str = "Arial"
+    keep_intermediates: bool = False
 
     youtube_token_file: str = "youtube_token.json"
     youtube_client_secret_file: str = "client_secret.json"
@@ -56,6 +57,8 @@ class Config:
                 continue
             raw = raw.strip()
             if f.type == "int":
+                if not raw.lstrip("-").isdigit():
+                    raise ValueError(f"{f.name.upper()} must be a whole number, got {raw!r}")
                 values[f.name] = int(raw)
             elif f.type == "bool":
                 values[f.name] = raw.lower() not in ("false", "0", "no", "off")
@@ -97,7 +100,10 @@ class Config:
             },
             "platforms": {
                 "youtube": entry(
-                    Path(self.youtube_client_secret_file).exists() or Path(self.youtube_token_file).exists()
+                    Path(self.youtube_token_file).exists(),
+                    "Chạy `ai-content-agent youtube-auth` một lần để đăng nhập YouTube"
+                    if Path(self.youtube_client_secret_file).exists()
+                    else None,
                 ),
                 "tiktok": entry(bool(self.tiktok_access_token)),
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),

@@ -29,15 +29,31 @@ class TopicRotation:
     def topics(self) -> list[str]:
         return list(self._topics)
 
-    def peek(self) -> str:
+    def _find(self, skip: Callable[[str], bool], advance: bool) -> str | None:
         with self._lock:
-            return self._topics[self._index % len(self._topics)]
+            for offset in range(len(self._topics)):
+                position = self._index + offset
+                topic = self._topics[position % len(self._topics)]
+                if not skip(topic):
+                    if advance:
+                        self._index = position + 1
+                    return topic
+            return None
 
-    def next(self) -> str:
-        with self._lock:
-            topic = self._topics[self._index % len(self._topics)]
-            self._index += 1
-            return topic
+    def peek(self, skip: Callable[[str], bool] = lambda _topic: False) -> str | None:
+        return self._find(skip, advance=False)
+
+    def next(self, skip: Callable[[str], bool] = lambda _topic: False) -> str | None:
+        """Next topic in rotation that `skip` does not reject (e.g. recently published),
+        or None when every topic is rejected."""
+
+        return self._find(skip, advance=True)
+
+
+ALL_TOPICS_USED = (
+    "Mọi chủ đề trong lịch đã được đăng trong {days} ngày qua nên lần chạy này bị bỏ qua — "
+    "thêm chủ đề mới hoặc giảm DEDUP_WINDOW_DAYS."
+)
 
 
 def start_background(job: Callable[[], None], cron_expr: str):
@@ -58,7 +74,10 @@ def run_forever(pipeline: ContentPipeline, topics: list[str], *, cron_expr: str 
     scheduler = BlockingScheduler()
 
     def _job() -> None:
-        topic = rotation.next()
+        topic = rotation.next(skip=pipeline.is_duplicate)
+        if topic is None:
+            logger.warning(ALL_TOPICS_USED.format(days=pipeline.dedup_window_days))
+            return
         logger.info("Scheduled run for topic=%r", topic)
         try:
             pipeline.run(topic)

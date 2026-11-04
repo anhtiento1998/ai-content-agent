@@ -166,3 +166,114 @@ def test_storyboard_failure_is_tagged_as_script_stage(tmp_path, writer):
 def test_studio_rejects_non_visual_provider(tmp_path):
     with pytest.raises(TypeError):
         VideoStudio(FakeText(), SilentVoiceProvider(), SilentVoiceProvider(), _settings(tmp_path))
+
+
+# ---------- robustness ----------
+
+
+class FlakyVoice(SilentVoiceProvider):
+    """Fails the first `failures` calls with the given error, then succeeds."""
+
+    def __init__(self, error, failures=1):
+        self.calls = 0
+        self._error, self._failures = error, failures
+
+    def synthesize(self, text, out_path):
+        self.calls += 1
+        if self.calls <= self._failures:
+            raise self._error
+        super().synthesize(text, out_path)
+
+
+class RateLimited(Exception):
+    status_code = 429
+
+
+class ConcurrencyTrackingImages(CardImageProvider):
+    max_concurrency = 1
+
+    def __init__(self):
+        import threading
+
+        self.active = self.peak = 0
+        self._lock = threading.Lock()
+
+    def generate_image(self, prompt, out_path, *, aspect_ratio="9:16"):
+        import time
+
+        with self._lock:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(0.05)
+        super().generate_image(prompt, out_path, aspect_ratio=aspect_ratio)
+        with self._lock:
+            self.active -= 1
+
+
+def test_string_hashtags_are_split_into_words():
+    board = parse_storyboard(json.dumps({**STORYBOARD, "hashtags": "#tietkiem, #meohay  dien"}))
+    assert board.hashtags == ["tietkiem", "meohay", "dien"]
+
+
+@needs_ffmpeg
+def test_transient_errors_are_retried(tmp_path):
+    voice = FlakyVoice(RateLimited("slow down"), failures=2)
+    studio = VideoStudio(FakeText(), CardImageProvider(), voice, _settings(tmp_path, retry_base_delay=0))
+
+    studio.produce("topic")
+
+    assert voice.calls == 2 + len(STORYBOARD["scenes"])
+
+
+def test_permanent_errors_fail_fast_without_retry(tmp_path):
+    voice = FlakyVoice(ValueError("invalid api key"), failures=99)
+    studio = VideoStudio(FakeText(), CardImageProvider(), voice, _settings(tmp_path, retry_base_delay=0))
+
+    with pytest.raises(StudioStageError):
+        studio.produce("topic")
+    assert voice.calls <= len(STORYBOARD["scenes"])
+
+
+@needs_ffmpeg
+def test_visual_provider_concurrency_limit_is_respected(tmp_path):
+    images = ConcurrencyTrackingImages()
+    studio = VideoStudio(FakeText(), images, SilentVoiceProvider(), _settings(tmp_path))
+
+    studio.produce("topic")
+
+    assert images.peak == 1
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("keep", [False, True])
+def test_intermediates_are_cleaned_unless_kept(tmp_path, keep):
+    studio = VideoStudio(FakeText(), CardImageProvider(), SilentVoiceProvider(), _settings(tmp_path, keep_intermediates=keep))
+
+    _, video = studio.produce("topic")
+
+    names = {p.name for p in Path(video.raw["work_dir"]).iterdir()}
+    kept = {"storyboard.json", "subtitles.ass", "final.mp4", "scene_01_visual.png", "scene_01_voice.wav"}
+    assert kept <= names
+    assert ("voice.wav" in names) is keep
+    assert ("scene_01_voice_raw.wav" in names) is keep
+
+
+def test_real_sdk_errors_are_classified_for_retry():
+    import anthropic
+    import httpx
+    import openai
+    from google.genai import errors
+
+    from ai_content_agent.studio.studio import _is_transient
+
+    request = httpx.Request("POST", "https://example.invalid")
+
+    def response(code):
+        return httpx.Response(code, request=request)
+
+    assert _is_transient(openai.RateLimitError("rl", response=response(429), body=None))
+    assert _is_transient(openai.APIConnectionError(request=request))
+    assert _is_transient(anthropic.APIStatusError("overloaded", response=response(529), body=None))
+    assert _is_transient(errors.ServerError(503, {"error": {"code": 503, "message": "unavailable"}}))
+    assert not _is_transient(openai.AuthenticationError("bad key", response=response(401), body=None))
+    assert not _is_transient(errors.ClientError(400, {"error": {"code": 400, "message": "bad"}}))
