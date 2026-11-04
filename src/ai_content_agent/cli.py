@@ -52,7 +52,9 @@ def main() -> None:
     agent = ContentAgent(config)
 
     if args.command == "run":
-        platforms = args.platforms or ["youtube", "tiktok", "facebook", "instagram"]
+        from ai_content_agent.publishers import PUBLISHERS
+
+        platforms = args.platforms or list(PUBLISHERS)
         pipeline = agent.build_pipeline(platforms)
         results = pipeline.run(args.topic, style=args.style, dry_run=args.dry_run, force=args.force)
         for result in results:

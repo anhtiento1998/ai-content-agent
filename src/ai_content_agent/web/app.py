@@ -20,10 +20,11 @@ from pydantic import BaseModel, Field, model_validator
 
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.scheduler import TopicRotation
+from ai_content_agent.publishers import PUBLISHERS
 from ai_content_agent.web.jobs import JobManager
 
 STATIC_DIR = Path(__file__).parent / "static"
-Platform = Literal["youtube", "tiktok", "facebook", "instagram"]
+Platform = Literal[tuple(PUBLISHERS)]  # type: ignore[valid-type]  # stays in sync with the registry
 
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",

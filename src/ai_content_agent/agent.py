@@ -10,7 +10,7 @@ from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.providers import TEXT_PROVIDERS, VIDEO_PROVIDERS
-from ai_content_agent.publishers import FacebookPublisher, InstagramPublisher, TikTokPublisher, YouTubePublisher
+from ai_content_agent.publishers import FacebookPublisher, TikTokPublisher, YouTubePublisher
 from ai_content_agent.publishers.base import Publisher
 
 
@@ -51,19 +51,17 @@ class ContentAgent:
                     )
                 )
             elif platform == "tiktok":
-                publishers.append(TikTokPublisher(access_token=self._config.tiktok_access_token))
+                publishers.append(
+                    TikTokPublisher(
+                        access_token=self._config.tiktok_access_token,
+                        privacy_level=self._config.tiktok_privacy_level,
+                    )
+                )
             elif platform == "facebook":
                 publishers.append(
                     FacebookPublisher(
                         page_id=self._config.facebook_page_id,
                         access_token=self._config.facebook_access_token,
-                    )
-                )
-            elif platform == "instagram":
-                publishers.append(
-                    InstagramPublisher(
-                        ig_user_id=self._config.instagram_user_id,
-                        access_token=self._config.instagram_access_token,
                     )
                 )
             else:

@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from ai_content_agent.agent import ContentAgent
 from ai_content_agent.config import Config
+from ai_content_agent.publishers import PUBLISHERS
 
 
 def main() -> None:
@@ -27,7 +28,7 @@ def main() -> None:
 
     config = Config.from_env()
     agent = ContentAgent(config)
-    pipeline = agent.build_pipeline(args.platforms or ["youtube", "tiktok", "facebook", "instagram"])
+    pipeline = agent.build_pipeline(args.platforms or list(PUBLISHERS))
     results = pipeline.run(args.topic, dry_run=args.dry_run)
     for result in results:
         print(f"{result.platform}: {result.url or result.remote_id}")

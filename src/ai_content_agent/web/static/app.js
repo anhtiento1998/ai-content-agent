@@ -7,7 +7,6 @@ const PLATFORM_LABELS = {
   youtube: "YouTube Shorts",
   tiktok: "TikTok",
   facebook: "Facebook Page",
-  instagram: "Instagram Reels",
 };
 const JOB_STATUS = {
   queued: ["Đang chờ", "info"],

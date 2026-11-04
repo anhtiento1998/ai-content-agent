@@ -16,10 +16,9 @@ class Config:
     youtube_token_file: str
     youtube_client_secret_file: str
     tiktok_access_token: str | None
+    tiktok_privacy_level: str
     facebook_page_id: str | None
     facebook_access_token: str | None
-    instagram_user_id: str | None
-    instagram_access_token: str | None
 
     text_provider: str
     video_provider: str
@@ -44,10 +43,9 @@ class Config:
             youtube_token_file=os.getenv("YOUTUBE_TOKEN_FILE", "youtube_token.json"),
             youtube_client_secret_file=os.getenv("YOUTUBE_CLIENT_SECRET_FILE", "client_secret.json"),
             tiktok_access_token=os.getenv("TIKTOK_ACCESS_TOKEN"),
+            tiktok_privacy_level=os.getenv("TIKTOK_PRIVACY_LEVEL", "SELF_ONLY"),
             facebook_page_id=os.getenv("FACEBOOK_PAGE_ID"),
             facebook_access_token=os.getenv("FACEBOOK_ACCESS_TOKEN"),
-            instagram_user_id=os.getenv("INSTAGRAM_USER_ID"),
-            instagram_access_token=os.getenv("INSTAGRAM_ACCESS_TOKEN"),
             text_provider=os.getenv("TEXT_PROVIDER", "claude"),
             video_provider=os.getenv("VIDEO_PROVIDER", "veo"),
             history_db_path=os.getenv("HISTORY_DB_PATH", "data/history.db"),
@@ -84,6 +82,5 @@ class Config:
                 ),
                 "tiktok": entry(bool(self.tiktok_access_token)),
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
-                "instagram": entry(False, "Cần video ở URL public — chưa hỗ trợ upload tự động"),
             },
         }

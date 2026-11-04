@@ -2,12 +2,13 @@
 
 Agent tự động hóa toàn bộ chuỗi: **sinh ý tưởng/script → tạo video → đăng
 lên nhiều nền tảng mạng xã hội**, dùng GPT, Claude, Google AI (Gemini/Veo)
-và Meta Muse làm engine chính, với publisher cho YouTube, TikTok,
-Facebook và Instagram.
+và Meta Muse làm engine chính, đăng lên **YouTube Shorts, TikTok và
+Facebook Page**.
 
 Kiến trúc được thiết kế để **thêm nền tảng mới chỉ cần viết 1 class**,
-không phải sửa lại pipeline. Có **dashboard web** để bấm tạo video, theo
-dõi tiến trình, xem lịch sử, lịch tự động và log lỗi.
+không phải sửa lại pipeline. Có **dashboard web** (mở bằng trình duyệt)
+để bấm tạo video, theo dõi tiến trình, xem lịch sử, lịch tự động và log
+lỗi.
 
 ![Dashboard](docs/dashboard.png)
 
@@ -26,7 +27,7 @@ VideoGenerator  (veo)                     -> VideoResult{file_path}
 Thumbnail       (ffmpeg + Pillow)         -> VideoResult.thumbnail_path
    │
    ▼
-Publisher[]     (youtube | tiktok | facebook | instagram)  -> PublishResult{url}
+Publisher[]     (youtube | tiktok | facebook)  -> PublishResult{url}
    │
    ▼
 HistoryStore    (SQLite)                  -> lưu run, lượt đăng, lỗi từng bước; chặn topic trùng
@@ -64,9 +65,8 @@ phí API), và có thể chạy luôn lịch cron trong cùng tiến trình.
 | Veo (Google AI Pro) — video | hoạt động nếu tài khoản có quyền Veo; tên model/tham số nên verify lại với docs hiện tại vì Google đổi khá thường xuyên |
 | Muse Video (Meta) — video | **chưa có** — tính đến 10/2026 Meta chưa mở API chính thức cho Muse Video. Chọn `VIDEO_PROVIDER=muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền sinh script trước). Các dịch vụ bên thứ ba bọc gói muse.ai không chính thức nên không được hỗ trợ |
 | YouTube — publish | hoạt động, cần OAuth app (xem dưới) |
-| TikTok — publish | khung đúng theo Content Posting API, cần app TikTok for Business được duyệt quyền `video.publish` |
-| Facebook Page — publish | hoạt động, cần Page access token dài hạn |
-| Instagram Reels — publish | code có sẵn nhưng **chưa dùng được trong pipeline**: Instagram yêu cầu video ở URL public, cần thêm bước upload lên S3/GCS (xem Roadmap) |
+| TikTok — publish | hoạt động theo Content Posting API (Direct Post, tự chia chunk cho video > 64MB), cần app được cấp quyền `video.publish`. **Trước khi TikTok audit app, bài chỉ đăng được ở chế độ riêng tư** (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`) |
+| Facebook Page — publish | hoạt động, cần Page access token dài hạn; trả về link `facebook.com/watch` |
 | Thumbnail tự động | hoạt động, cần `ffmpeg` trên máy; YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không xác minh thì bỏ qua, video vẫn đăng bình thường) |
 | Chống đăng trùng topic | hoạt động (SQLite, không cần cài thêm gì) |
 
@@ -158,32 +158,39 @@ hãy đặt sau reverse proxy có HTTPS để token không bị gửi dạng pla
    `youtube_token.json` và tự refresh các lần sau.
 
 ### TikTok
-1. Tạo app trên [TikTok for Business Developer Portal](https://developers.tiktok.com/).
-2. Xin quyền `video.publish` (cần review).
-3. Lấy access token dài hạn cho tài khoản mục tiêu, bỏ vào
-   `TIKTOK_ACCESS_TOKEN`.
+1. Tạo app trên [TikTok for Developers](https://developers.tiktok.com/),
+   bật sản phẩm **Content Posting API** (Direct Post).
+2. Xin quyền `video.publish`.
+3. Lấy access token cho tài khoản mục tiêu, bỏ vào `TIKTOK_ACCESS_TOKEN`.
+4. Khi app chưa được TikTok audit, video chỉ đăng ở chế độ riêng tư
+   (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`). Audit xong thì đổi thành
+   `PUBLIC_TO_EVERYONE`.
 
-### Facebook / Instagram
+### Facebook Page
 1. Tạo app trên [Meta for Developers](https://developers.facebook.com/).
-2. Lấy Page access token dài hạn (`FACEBOOK_PAGE_ID`,
-   `FACEBOOK_ACCESS_TOKEN`).
-3. Với Instagram: lấy id của IG Business account đã liên kết với Page
-   (`INSTAGRAM_USER_ID`), dùng cùng access token.
+2. Lấy Page access token dài hạn có quyền `pages_manage_posts` và
+   `pages_read_engagement`, điền `FACEBOOK_PAGE_ID` và
+   `FACEBOOK_ACCESS_TOKEN`.
 
 ## Mở rộng thêm nền tảng/engine mới
 
 1. Thêm nền tảng đăng bài (ví dụ X, LinkedIn, Pinterest):
    - Viết class mới trong `publishers/`, implement `Publisher.publish()`.
-   - Đăng ký vào `PUBLISHERS` trong `publishers/__init__.py`.
-   - Dùng ngay qua `--platform <tên>`.
+   - Đăng ký vào `PUBLISHERS` trong `publishers/__init__.py` — CLI và
+     API dashboard tự nhận nền tảng mới từ đây.
+   - Thêm biến môi trường vào `config.py` (+ 1 dòng trong
+     `Config.status()` để dashboard biết đã cấu hình chưa), và 1 nhánh
+     trong `ContentAgent._build_publishers()` để truyền credentials.
+   - (Tuỳ chọn) thêm tên hiển thị vào `PLATFORM_LABELS` trong
+     `web/static/app.js`.
 2. Thêm AI engine mới (text hoặc video):
    - Viết class mới trong `providers/`, implement `TextGenerator` hoặc
      `VideoGenerator`.
    - Đăng ký vào `TEXT_PROVIDERS`/`VIDEO_PROVIDERS` trong
-     `providers/__init__.py`.
+     `providers/__init__.py`, thêm nhánh trong `agent.py` để truyền key.
    - Chọn qua `TEXT_PROVIDER`/`VIDEO_PROVIDER` trong `.env`.
 
-Không cần sửa `content_pipeline.py` hay `agent.py` cho cả hai trường hợp.
+Không cần sửa `content_pipeline.py` cho cả hai trường hợp.
 
 ## Test
 
@@ -196,21 +203,20 @@ không cần key). Bao gồm: interface compliance, pipeline end-to-end,
 chống trùng topic, `--force`, dry-run, publisher lỗi không chặn
 publisher khác, ghi log lỗi từng bước, parse JSON từ model (kể cả khi bọc
 trong ```` ```json ````), toàn bộ API dashboard (xác thực token, trạng thái
-job, validate input, không lộ secret), và tạo thumbnail thật bằng ffmpeg
-(tự skip nếu máy không có ffmpeg).
+job, validate input, không lộ secret), publisher TikTok/Facebook với HTTP
+giả lập (lỗi API, upload thất bại, chia chunk), và tạo thumbnail thật bằng
+ffmpeg (tự skip nếu máy không có ffmpeg).
 
 ## Roadmap
 
-- [ ] Thay `requests` upload trực tiếp bằng pre-signed URL upload cho
-      video lớn (YouTube/TikTok resumable upload đã hỗ trợ, cần hoàn
-      thiện retry/backoff).
+- [ ] Retry/backoff khi upload lên YouTube/TikTok/Facebook bị lỗi mạng
+      tạm thời.
 - [x] Thêm bước tạo thumbnail tự động.
 - [x] Thêm bước lưu lịch sử đã đăng (tránh trùng topic) — SQLite đơn giản.
 - [x] Xem lịch sử qua CLI (`ai-content-agent history`).
 - [x] Dashboard web xem lịch đăng / log lỗi / tạo video.
 - [x] Kết nối Meta Muse Spark (text) qua Meta Model API.
-- [ ] Tự upload video lên storage public (S3/GCS) để Instagram dùng được
-      ngay trong pipeline.
+- [x] Tập trung 3 nền tảng YouTube, TikTok, Facebook (đã bỏ Instagram).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
       `MetaMuseVideoProvider.generate_video()`.
 - [ ] Quản lý danh sách chủ đề cho lịch tự động ngay trên dashboard
