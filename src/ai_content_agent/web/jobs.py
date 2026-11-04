@@ -47,6 +47,9 @@ class Job:
     video_path: str | None = None
     error: str | None = None
     failed_stage: str | None = None
+    stage: str | None = None
+    stage_done: int = 0
+    stage_total: int = 0
 
 
 class JobManager:
@@ -105,7 +108,12 @@ class JobManager:
                     self._history.record_error(job.topic, "setup", f"{type(exc).__name__}: {exc}")
                 raise
 
-            outcome = pipeline.run(job.topic, style=job.style, dry_run=job.dry_run, force=job.force)
+            def progress(stage: str, done: int, total: int) -> None:
+                job.stage, job.stage_done, job.stage_total = stage, done, total
+
+            outcome = pipeline.run(
+                job.topic, style=job.style, dry_run=job.dry_run, force=job.force, progress=progress
+            )
             if outcome.skipped:
                 job.status = "skipped"
                 job.error = "Topic này đã được đăng gần đây — bật “Đăng lại” để bỏ qua kiểm tra trùng."

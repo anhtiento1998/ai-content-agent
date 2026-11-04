@@ -184,6 +184,16 @@ cần dài hơn số ngày của cửa sổ chống trùng nếu đăng mỗi ng
 ai-content-agent dashboard --cron "0 9 * * *" --topic "Chủ đề 1" --topic "Chủ đề 2" --platform youtube --platform tiktok
 ```
 
+Giao diện "Mission Control" (phong cách vũ trụ cho dân IT):
+- Nền sao 3 lớp chuyển động + sao băng (canvas), tự dừng khi tab ẩn.
+- Mỗi nhiệm vụ là 1 **chuỗi phóng** 4 bước — Kịch bản → Giọng & hình
+  (đếm x/y) → Dựng video → Đăng bài (x/y) — lấy từ **tiến độ thật** của
+  backend, không phải hoạt ảnh giả; bước lỗi chuyển đỏ kèm tên bước.
+- Lịch tự động dạng quỹ đạo với đồng hồ đếm ngược `T-HH:MM:SS`.
+- Số liệu đếm tăng dần, thông báo nổi khi nhiệm vụ xong/lỗi, nút
+  "Khởi động" có tên lửa cất cánh.
+- Tôn trọng cài đặt "giảm chuyển động" của hệ điều hành (tắt hoạt ảnh).
+
 Dashboard có:
 - Thống kê: số video, lượt đăng theo nền tảng, lỗi 7 ngày qua.
 - Form tạo video: chọn nền tảng (nền tảng chưa cấu hình bị khóa kèm lý

@@ -277,3 +277,16 @@ def test_real_sdk_errors_are_classified_for_retry():
     assert _is_transient(errors.ServerError(503, {"error": {"code": 503, "message": "unavailable"}}))
     assert not _is_transient(openai.AuthenticationError("bad key", response=response(401), body=None))
     assert not _is_transient(errors.ClientError(400, {"error": {"code": 400, "message": "bad"}}))
+
+
+@needs_ffmpeg
+def test_studio_reports_real_progress_in_order(tmp_path):
+    events = []
+    studio = VideoStudio(FakeText(), CardImageProvider(), SilentVoiceProvider(), _settings(tmp_path))
+
+    studio.produce("topic", progress=lambda stage, done, total: events.append((stage, done, total)))
+
+    stages = [e[0] for e in events]
+    assert stages[0] == "script" and stages[-1] == "render"
+    asset_counts = [done for stage, done, total in events if stage == "assets"]
+    assert asset_counts == list(range(0, 2 * len(STORYBOARD["scenes"]) + 1))

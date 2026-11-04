@@ -15,6 +15,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from ai_content_agent.media.ffmpeg import wav_duration
 from ai_content_agent.providers.base import (
@@ -51,6 +52,14 @@ class StudioSettings:
     retry_attempts: int = 3
     retry_base_delay: float = 4.0
     keep_intermediates: bool = False
+
+
+Progress = Callable[[str, int, int], None]
+"""progress(stage, done, total) — stage is script | assets | render; done/total count assets."""
+
+
+def _no_progress(_stage: str, _done: int, _total: int) -> None:
+    return None
 
 
 class StudioStageError(RuntimeError):
@@ -110,9 +119,13 @@ class VideoStudio:
                 logger.warning("Transient %s (attempt %d/%d), retrying in %.0fs", type(exc).__name__, attempt, attempts, delay)
                 time.sleep(delay)
 
-    def produce(self, topic: str, *, style: str = "") -> tuple[Storyboard, VideoResult]:
+    def produce(
+        self, topic: str, *, style: str = "", progress: Progress | None = None
+    ) -> tuple[Storyboard, VideoResult]:
+        report = progress or _no_progress
+        report("script", 0, 0)
         storyboard = self.write_storyboard(topic, style=style)
-        return storyboard, self.render(storyboard)
+        return storyboard, self.render(storyboard, progress=report)
 
     def write_storyboard(self, topic: str, *, style: str = "") -> Storyboard:
         logger.info("Writing storyboard for topic=%r via %s", topic, self._writer.name)
@@ -128,7 +141,8 @@ class VideoStudio:
         except Exception as exc:
             raise StudioStageError("script", f"{type(exc).__name__}: {exc}") from exc
 
-    def render(self, storyboard: Storyboard) -> VideoResult:
+    def render(self, storyboard: Storyboard, *, progress: Progress | None = None) -> VideoResult:
+        report = progress or _no_progress
         work = self._new_work_dir(storyboard.title)
         cwd = str(work)
         (work / "storyboard.json").write_text(
@@ -139,8 +153,9 @@ class VideoStudio:
         visual_files = [f"scene_{i:02d}_visual.{'mp4' if is_video else 'png'}" for i in range(1, len(scenes) + 1)]
         logger.info("Rendering %d scenes in %s (visual=%s, voice=%s)", len(scenes), work, self._visuals.name, self._voice.name)
 
-        voice_durations = self._generate_assets(scenes, visual_files, work, is_video)
+        voice_durations = self._generate_assets(scenes, visual_files, work, is_video, report)
 
+        report("render", 0, 0)
         try:
             durations = [round((d + self._settings.scene_padding) * render.FPS) / render.FPS for d in voice_durations]
             clips, audios = [], []
@@ -187,10 +202,19 @@ class VideoStudio:
             raw={"work_dir": str(work), "scenes": len(scenes), "engines": self.engine_names},
         )
 
-    def _generate_assets(self, scenes, visual_files: list[str], work: Path, is_video: bool) -> list[float]:
+    def _generate_assets(
+        self, scenes, visual_files: list[str], work: Path, is_video: bool, report: Progress
+    ) -> list[float]:
         """Voice and visual for every scene, concurrently — these are the slow API calls."""
 
         visual_slots = threading.Semaphore(self._visuals.max_concurrency or self._settings.max_workers)
+        total, finished, counter_lock = 2 * len(scenes), [0], threading.Lock()
+        report("assets", 0, total)
+
+        def tick(_future: Future) -> None:
+            with counter_lock:  # report under the lock so counts never arrive out of order
+                finished[0] += 1
+                report("assets", finished[0], total)
 
         def make_voice(i: int, text: str) -> float:
             raw, clean = f"scene_{i:02d}_voice_raw.wav", f"scene_{i:02d}_voice.wav"
@@ -207,6 +231,8 @@ class VideoStudio:
         try:
             voices = [pool.submit(make_voice, i, s.narration) for i, s in enumerate(scenes, 1)]
             visuals = [pool.submit(make_visual, s.visual_prompt, n) for s, n in zip(scenes, visual_files)]
+            for future in (*voices, *visuals):
+                future.add_done_callback(tick)
             durations = [_await(f, "voice", i) for i, f in enumerate(voices, 1)]
             for i, future in enumerate(visuals, 1):
                 _await(future, "visual", i)

@@ -3,77 +3,116 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Content Agent</title>
+  <meta name="color-scheme" content="dark">
+  <title>Mission Control · AI Content Agent</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
+  <canvas id="starfield" aria-hidden="true"></canvas>
+  <div class="nebula" aria-hidden="true"></div>
+  <div class="scanlines" aria-hidden="true"></div>
+
   <header class="topbar">
     <div class="topbar-inner">
-      <div>
-        <h1>AI Content Agent</h1>
-        <p class="muted" id="updated-at">Đang tải…</p>
+      <div class="brand">
+        <div class="orbit-logo" aria-hidden="true">
+          <span class="planet"></span>
+          <span class="ring ring-a"><i></i></span>
+          <span class="ring ring-b"><i></i></span>
+        </div>
+        <div>
+          <h1 class="glitch" data-text="MISSION CONTROL">MISSION CONTROL</h1>
+          <p class="mono sub"><span class="prompt">~/ai-content-agent $</span> <span id="updated-at">booting…</span><span class="caret" aria-hidden="true"></span></p>
+        </div>
       </div>
-      <div class="chips" id="provider-chips"></div>
+      <div class="systems" id="provider-chips" aria-label="Trạng thái engine"></div>
     </div>
   </header>
 
   <section class="auth" id="auth" hidden>
-    <form class="card auth-card" id="auth-form">
-      <h2>Nhập token dashboard</h2>
+    <form class="panel auth-card" id="auth-form">
+      <div class="panel-title"><span class="dot"></span>ACCESS CONTROL</div>
+      <h2>Yêu cầu mã truy cập</h2>
       <p class="muted">Token được in ra terminal khi chạy <code>ai-content-agent dashboard</code>, hoặc là giá trị <code>DASHBOARD_TOKEN</code> trong <code>.env</code>.</p>
-      <input type="password" id="auth-token" autocomplete="off" required placeholder="Token">
-      <button type="submit" class="btn primary">Đăng nhập</button>
-      <p class="form-error" id="auth-error" hidden>Token không đúng.</p>
+      <label class="field">
+        <span class="mono label">&gt; token</span>
+        <input type="password" id="auth-token" autocomplete="off" required placeholder="••••••••••••">
+      </label>
+      <button type="submit" class="btn primary">Xác thực</button>
+      <p class="form-error" id="auth-error" hidden>ACCESS DENIED — token không đúng.</p>
     </form>
   </section>
 
   <main class="container" id="app" hidden>
-    <section class="stats" id="stats">
-      <div class="card stat"><span class="stat-label">Video đã tạo</span><span class="stat-value" id="stat-runs">–</span></div>
-      <div class="card stat"><span class="stat-label">Lượt đăng thành công</span><span class="stat-value" id="stat-publishes">–</span><span class="stat-sub" id="stat-platforms"></span></div>
-      <div class="card stat"><span class="stat-label">Lỗi 7 ngày qua</span><span class="stat-value" id="stat-errors">–</span></div>
-      <div class="card stat"><span class="stat-label">Lần chạy gần nhất</span><span class="stat-value small" id="stat-last">–</span></div>
+    <section class="stats" aria-label="Thông số">
+      <div class="panel stat accent-cyan">
+        <span class="stat-label mono">VIDEO_RENDERED</span>
+        <span class="stat-value" id="stat-runs">0</span>
+        <span class="stat-sub">video đã sản xuất</span>
+      </div>
+      <div class="panel stat accent-green">
+        <span class="stat-label mono">TRANSMISSIONS_OK</span>
+        <span class="stat-value" id="stat-publishes">0</span>
+        <span class="stat-sub" id="stat-platforms">lượt đăng thành công</span>
+      </div>
+      <div class="panel stat accent-red">
+        <span class="stat-label mono">ANOMALIES_7D</span>
+        <span class="stat-value" id="stat-errors">0</span>
+        <span class="stat-sub">lỗi trong 7 ngày</span>
+      </div>
+      <div class="panel stat accent-violet">
+        <span class="stat-label mono">LAST_LAUNCH</span>
+        <span class="stat-value small" id="stat-last">–</span>
+        <span class="stat-sub" id="stat-last-abs"></span>
+      </div>
     </section>
 
     <div class="grid">
-      <section class="card">
-        <h2>Tạo video mới</h2>
+      <section class="panel launch">
+        <div class="panel-title"><span class="dot"></span>LAUNCH PAD</div>
+        <h2>Phóng nhiệm vụ mới</h2>
         <form id="run-form" novalidate>
           <label class="field">
-            <span>Chủ đề</span>
+            <span class="mono label">&gt; chủ_đề</span>
             <input type="text" id="topic" maxlength="300" required placeholder="VD: 5 mẹo tiết kiệm điện mùa hè">
           </label>
           <label class="field">
-            <span>Phong cách <small class="muted">(không bắt buộc)</small></span>
+            <span class="mono label">&gt; phong_cách <small>(tuỳ chọn)</small></span>
             <input type="text" id="style" maxlength="300" placeholder="VD: hài hước, nhịp nhanh">
           </label>
           <fieldset class="field">
-            <legend>Đăng lên</legend>
+            <legend class="mono label">&gt; quỹ_đạo_đăng</legend>
             <div class="platforms" id="platforms"></div>
           </fieldset>
           <div class="toggles">
-            <label class="check"><input type="checkbox" id="dry-run"> Chạy thử (chỉ tạo, không đăng)</label>
-            <label class="check"><input type="checkbox" id="force"> Đăng lại kể cả khi topic đã đăng gần đây</label>
+            <label class="switch"><input type="checkbox" id="dry-run"><span class="track"><span class="thumb"></span></span> Chạy thử — chỉ dựng video, không đăng</label>
+            <label class="switch"><input type="checkbox" id="force"><span class="track"><span class="thumb"></span></span> Đăng lại kể cả khi chủ đề đã đăng gần đây</label>
           </div>
           <p class="form-error" id="run-error" hidden></p>
-          <button type="submit" class="btn primary" id="run-submit">Tạo &amp; đăng</button>
+          <button type="submit" class="btn primary launch-btn" id="run-submit">
+            <svg class="rocket" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c3 2.5 4.5 6 4.5 10l2.5 3-2 4-2.5-2h-5L7 19l-2-4 2.5-3C7.5 8 9 4.5 12 2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="10" r="1.8" fill="currentColor"/><path class="flame" d="M10.5 18.5 12 23l1.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            <span>Khởi động</span>
+          </button>
         </form>
       </section>
 
       <div class="stack">
-        <section class="card">
+        <section class="panel">
+          <div class="panel-title"><span class="dot"></span>ORBIT SCHEDULE</div>
           <h2>Lịch tự động</h2>
           <div id="schedule"></div>
         </section>
-        <section class="card">
+        <section class="panel">
+          <div class="panel-title"><span class="dot live"></span>ACTIVE MISSIONS</div>
           <h2>Tiến trình</h2>
           <ul class="jobs" id="jobs"></ul>
         </section>
       </div>
     </div>
 
-    <section class="card">
+    <section class="panel">
+      <div class="panel-title"><span class="dot"></span>MISSION LOG</div>
       <h2>Lịch sử</h2>
       <div class="table-wrap">
         <table>
@@ -83,7 +122,8 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="panel terminal">
+      <div class="panel-title"><span class="dot danger"></span>INCIDENT LOG · stderr</div>
       <h2>Lỗi gần đây</h2>
       <div class="table-wrap">
         <table>
@@ -93,5 +133,7 @@
       </div>
     </section>
   </main>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 </body>
 </html>

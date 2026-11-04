@@ -16,6 +16,7 @@ from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 from ai_content_agent.publishers.base import Publisher, PublishResult
 from ai_content_agent.studio import StudioStageError, VideoStudio
+from ai_content_agent.studio.studio import Progress
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,19 @@ class ContentPipeline:
             message = str(exc) if isinstance(exc, StudioStageError) else f"{type(exc).__name__}: {exc}"
             self._history.record_error(topic, stage, message, **kwargs)
 
-    def run(self, topic: str, *, style: str = "", dry_run: bool = False, force: bool = False) -> RunOutcome:
+    def run(
+        self,
+        topic: str,
+        *,
+        style: str = "",
+        dry_run: bool = False,
+        force: bool = False,
+        progress: Progress | None = None,
+    ) -> RunOutcome:
+        """`progress(stage, done, total)` is called as the run advances through
+        script -> assets -> render -> publish (done/total count assets or platforms)."""
+
+        report = progress or (lambda _stage, _done, _total: None)
         if not force and self.is_duplicate(topic):
             logger.warning(
                 "Skipping topic=%r — already published within the last %d days (pass force=True to override)",
@@ -70,7 +83,7 @@ class ContentPipeline:
             return RunOutcome(skipped=True)
 
         try:
-            storyboard, video = self._studio.produce(topic, style=style)
+            storyboard, video = self._studio.produce(topic, style=style, progress=report)
         except StudioStageError as exc:
             self._record_error(topic, exc.stage, exc)
             raise
@@ -92,15 +105,18 @@ class ContentPipeline:
         run_id = self._history.record_run(topic, script, video) if self._history else None
 
         published = []
-        for publisher in self._publishers:
+        report("publish", 0, len(self._publishers))
+        for attempt, publisher in enumerate(self._publishers, 1):
             logger.info("Publishing to %s", publisher.name)
             try:
                 result = publisher.publish(video, script)
             except Exception as exc:
                 logger.exception("Publish to %s failed", publisher.name)
                 self._record_error(topic, "publish", exc, run_id=run_id, platform=publisher.name)
+                report("publish", attempt, len(self._publishers))
                 continue
             published.append(result)
             if self._history and run_id is not None:
                 self._history.record_publish(run_id, result)
+            report("publish", attempt, len(self._publishers))
         return RunOutcome(script=script, video=video, published=published)

@@ -208,3 +208,11 @@ def test_config_from_env_maps_field_names_and_types(monkeypatch, tmp_path):
     assert (config.visual_provider, config.target_seconds, config.make_thumbnails) == ("card", 25, False)
     assert config.openai_api_key is None
     assert config.voice_provider == "gemini"
+
+
+def test_job_exposes_stage_progress(env):
+    client, jobs, _ = env
+
+    job = _run(client, jobs, platforms=["youtube", "tiktok"])
+
+    assert (job["stage"], job["stage_done"], job["stage_total"]) == ("publish", 2, 2)

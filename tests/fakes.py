@@ -75,8 +75,12 @@ class FakeStudio:
         self._video_path = video_path
         self._fail_stage = fail_stage
 
-    def produce(self, topic, *, style=""):
+    def produce(self, topic, *, style="", progress=None):
         self.calls += 1
+        report = progress or (lambda *_: None)
+        report("script", 0, 0)
+        report("assets", 2, 2)
+        report("render", 0, 0)
         if self._fail_stage:
             raise StudioStageError(self._fail_stage, f"scene 1: RuntimeError: {self._fail_stage} broke")
         storyboard = Storyboard(
