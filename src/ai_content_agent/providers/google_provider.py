@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 
-from .base import ScriptResult, VideoGenerator, VideoResult, TextGenerator
+from ai_content_agent.utils import slugify
+
+from .base import ScriptResult, TextGenerator, VideoGenerator, VideoResult, build_script_prompt, parse_script_json
 
 
 class GeminiProvider(TextGenerator):
@@ -19,20 +20,10 @@ class GeminiProvider(TextGenerator):
         self._model = model
 
     def generate_script(self, topic: str, *, style: str = "", max_words: int = 150) -> ScriptResult:
-        prompt = (
-            f"Write a short-form video script about: {topic}\n"
-            f"Style: {style or 'engaging, punchy, social-media friendly'}\n"
-            f"Limit the spoken script to about {max_words} words.\n"
-            'Respond with ONLY JSON: {"title": str, "script": str, "hashtags": [str, ...]}'
+        response = self._client.models.generate_content(
+            model=self._model, contents=build_script_prompt(topic, style, max_words)
         )
-        response = self._client.models.generate_content(model=self._model, contents=prompt)
-        data = json.loads(response.text)
-        return ScriptResult(
-            title=data["title"],
-            script=data["script"],
-            hashtags=data.get("hashtags", []),
-            raw=data,
-        )
+        return parse_script_json(response.text)
 
 
 class VeoProvider(VideoGenerator):
@@ -64,7 +55,7 @@ class VeoProvider(VideoGenerator):
 
         video = operation.response.generated_videos[0]
         Path("output").mkdir(exist_ok=True)
-        out_path = f"output/{script.title[:40].strip().replace(' ', '_')}.mp4"
+        out_path = f"output/{slugify(script.title)}_{int(time.time())}.mp4"
         self._client.files.download(file=video.video)
         video.video.save(out_path)
         return VideoResult(file_path=out_path, raw={"operation_name": operation.name})

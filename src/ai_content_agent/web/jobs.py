@@ -1,0 +1,141 @@
+"""Background job runner for dashboard-triggered and scheduled pipeline runs.
+
+Jobs run one at a time on a single worker thread: video generation is slow
+and billed per call, so serialising keeps API spend and quota predictable.
+Job state lives in memory only; durable results are in HistoryStore.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import uuid
+from collections import OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from typing import Callable
+
+from ai_content_agent.history import HistoryStore
+from ai_content_agent.pipeline.content_pipeline import ContentPipeline
+
+logger = logging.getLogger(__name__)
+
+PipelineFactory = Callable[[list[str]], ContentPipeline]
+_TERMINAL = {"succeeded", "partial", "skipped", "failed"}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+@dataclass
+class Job:
+    id: str
+    topic: str
+    platforms: list[str]
+    style: str
+    dry_run: bool
+    force: bool
+    source: str
+    status: str = "queued"
+    created_at: str = field(default_factory=_now)
+    started_at: str | None = None
+    finished_at: str | None = None
+    results: list[dict] = field(default_factory=list)
+    error: str | None = None
+
+
+class JobManager:
+    def __init__(
+        self, pipeline_factory: PipelineFactory, *, history: HistoryStore | None = None, max_jobs: int = 100
+    ) -> None:
+        self._factory = pipeline_factory
+        self._history = history
+        self._max_jobs = max_jobs
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="content-job")
+        self._jobs: OrderedDict[str, Job] = OrderedDict()
+        self._futures: dict[str, Future] = {}
+        self._lock = threading.Lock()
+
+    def submit(
+        self,
+        topic: str,
+        platforms: list[str],
+        *,
+        style: str = "",
+        dry_run: bool = False,
+        force: bool = False,
+        source: str = "manual",
+    ) -> Job:
+        job = Job(
+            id=uuid.uuid4().hex[:12],
+            topic=topic,
+            platforms=list(platforms),
+            style=style,
+            dry_run=dry_run,
+            force=force,
+            source=source,
+        )
+        with self._lock:
+            self._jobs[job.id] = job
+            self._evict_finished()
+            self._futures[job.id] = self._executor.submit(self._run, job)
+        return job
+
+    def _evict_finished(self) -> None:
+        for job_id in [j.id for j in self._jobs.values() if j.status in _TERMINAL]:
+            if len(self._jobs) <= self._max_jobs:
+                break
+            del self._jobs[job_id]
+            self._futures.pop(job_id, None)
+
+    def _run(self, job: Job) -> None:
+        job.status = "running"
+        job.started_at = _now()
+        try:
+            try:
+                pipeline = self._factory(job.platforms)
+            except Exception as exc:
+                if self._history:
+                    self._history.record_error(job.topic, "setup", f"{type(exc).__name__}: {exc}")
+                raise
+
+            if not job.force and pipeline.is_duplicate(job.topic):
+                job.status = "skipped"
+                job.error = "Topic này đã được đăng gần đây — bật “Đăng lại” để bỏ qua kiểm tra trùng."
+                return
+
+            results = pipeline.run(job.topic, style=job.style, dry_run=job.dry_run, force=job.force)
+            job.results = [{"platform": r.platform, "remote_id": r.remote_id, "url": r.url} for r in results]
+
+            if job.dry_run:
+                job.status = "succeeded"
+            elif not results:
+                job.status = "failed"
+                job.error = "Đăng thất bại trên mọi nền tảng — xem mục Lỗi gần đây."
+            elif len(results) < len(job.platforms):
+                job.status = "partial"
+            else:
+                job.status = "succeeded"
+        except Exception as exc:
+            logger.exception("Job %s failed", job.id)
+            job.status = "failed"
+            job.error = f"{type(exc).__name__}: {exc}"
+        finally:
+            job.finished_at = _now()
+
+    def list(self) -> list[dict]:
+        with self._lock:
+            return [asdict(job) for job in reversed(self._jobs.values())]
+
+    def get(self, job_id: str) -> dict | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            return asdict(job) if job else None
+
+    def wait(self, job_id: str, timeout: float | None = None) -> None:
+        self._futures[job_id].result(timeout=timeout)
+
+    def shutdown(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)

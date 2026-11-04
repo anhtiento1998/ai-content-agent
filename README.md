@@ -6,7 +6,10 @@ và Meta Muse làm engine chính, với publisher cho YouTube, TikTok,
 Facebook và Instagram.
 
 Kiến trúc được thiết kế để **thêm nền tảng mới chỉ cần viết 1 class**,
-không phải sửa lại pipeline.
+không phải sửa lại pipeline. Có **dashboard web** để bấm tạo video, theo
+dõi tiến trình, xem lịch sử, lịch tự động và log lỗi.
+
+![Dashboard](docs/dashboard.png)
 
 ## Kiến trúc
 
@@ -14,10 +17,10 @@ không phải sửa lại pipeline.
 topic (string)
    │
    ▼
-TextGenerator   (gpt | claude | gemini)   -> ScriptResult{title, script, hashtags}
+TextGenerator   (gpt | claude | gemini | muse)  -> ScriptResult{title, script, hashtags}
    │
    ▼
-VideoGenerator  (veo | muse)              -> VideoResult{file_path}
+VideoGenerator  (veo)                     -> VideoResult{file_path}
    │
    ▼
 Thumbnail       (ffmpeg + Pillow)         -> VideoResult.thumbnail_path
@@ -26,8 +29,12 @@ Thumbnail       (ffmpeg + Pillow)         -> VideoResult.thumbnail_path
 Publisher[]     (youtube | tiktok | facebook | instagram)  -> PublishResult{url}
    │
    ▼
-HistoryStore    (SQLite)                  -> lưu run + từng lượt đăng, chặn topic trùng
+HistoryStore    (SQLite)                  -> lưu run, lượt đăng, lỗi từng bước; chặn topic trùng
 ```
+
+Dashboard web (`ai-content-agent dashboard`) = FastAPI + HTML/JS thuần,
+chạy pipeline qua 1 hàng đợi background (mỗi lần 1 job để kiểm soát chi
+phí API), và có thể chạy luôn lịch cron trong cùng tiến trình.
 
 - `src/ai_content_agent/providers/` — mỗi AI engine là 1 class implement
   `TextGenerator` hoặc `VideoGenerator` (`providers/base.py`).
@@ -37,11 +44,14 @@ HistoryStore    (SQLite)                  -> lưu run + từng lượt đăng, c
   không biết chi tiết của bất kỳ provider/publisher cụ thể nào.
 - `src/ai_content_agent/media/thumbnail.py` — cắt 1 frame từ video,
   crop giữa về 1280x720, phủ tiêu đề lên.
-- `src/ai_content_agent/history.py` — SQLite lưu lịch sử, chống đăng
-  trùng topic trong `DEDUP_WINDOW_DAYS` ngày.
+- `src/ai_content_agent/history.py` — SQLite lưu lịch sử + lỗi, chống
+  đăng trùng topic trong `DEDUP_WINDOW_DAYS` ngày (chỉ tính lượt đã đăng
+  thành công, nên lần đăng thất bại có thể chạy lại).
+- `src/ai_content_agent/web/` — dashboard: `app.py` (API), `jobs.py`
+  (hàng đợi job), `server.py` (khởi động), `static/` (giao diện).
 - `src/ai_content_agent/agent.py` — đọc config, dựng pipeline cụ thể.
-- `src/ai_content_agent/cli.py` — chạy 1 lần (`run`) hoặc theo lịch
-  (`schedule`, dùng cron expression).
+- `src/ai_content_agent/cli.py` — `run`, `schedule`, `history`,
+  `dashboard`.
 
 ### Trạng thái từng provider/publisher
 
@@ -50,12 +60,13 @@ HistoryStore    (SQLite)                  -> lưu run + từng lượt đăng, c
 | GPT (OpenAI) — script | hoạt động, cần `OPENAI_API_KEY` |
 | Claude (Anthropic) — script | hoạt động, cần `ANTHROPIC_API_KEY` |
 | Gemini (Google AI) — script | hoạt động, cần `GOOGLE_API_KEY` |
+| Muse Spark (Meta) — script | hoạt động qua **Meta Model API** (public preview, chỉ developer ở Mỹ), model `muse-spark-1.1`, cần `META_MODEL_API_KEY` + `META_MODEL_API_BASE_URL` (lấy base URL từ [dev.meta.ai/docs](https://dev.meta.ai/docs)) |
 | Veo (Google AI Pro) — video | hoạt động nếu tài khoản có quyền Veo; tên model/tham số nên verify lại với docs hiện tại vì Google đổi khá thường xuyên |
-| Meta Muse — video | **chỉ là interface stub** — Meta chưa có API public ổn định tại thời điểm viết code này; điền endpoint/payload thật vào `providers/meta_muse_provider.py` khi bạn có quyền truy cập |
+| Muse Video (Meta) — video | **chưa có** — tính đến 10/2026 Meta chưa mở API chính thức cho Muse Video. Chọn `VIDEO_PROVIDER=muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền sinh script trước). Các dịch vụ bên thứ ba bọc gói muse.ai không chính thức nên không được hỗ trợ |
 | YouTube — publish | hoạt động, cần OAuth app (xem dưới) |
 | TikTok — publish | khung đúng theo Content Posting API, cần app TikTok for Business được duyệt quyền `video.publish` |
 | Facebook Page — publish | hoạt động, cần Page access token dài hạn |
-| Instagram Reels — publish | hoạt động nhưng yêu cầu video đã có public URL (upload lên S3/GCS trước khi gọi) |
+| Instagram Reels — publish | code có sẵn nhưng **chưa dùng được trong pipeline**: Instagram yêu cầu video ở URL public, cần thêm bước upload lên S3/GCS (xem Roadmap) |
 | Thumbnail tự động | hoạt động, cần `ffmpeg` trên máy; YouTube chỉ nhận custom thumbnail nếu kênh đã xác minh số điện thoại (không xác minh thì bỏ qua, video vẫn đăng bình thường) |
 | Chống đăng trùng topic | hoạt động (SQLite, không cần cài thêm gì) |
 
@@ -105,6 +116,38 @@ ai-content-agent history --limit 20
 ai-content-agent schedule "Chủ đề 1" "Chủ đề 2" --cron "0 9 * * *" --platform youtube
 ```
 
+## Dashboard web
+
+```bash
+ai-content-agent dashboard
+```
+
+Terminal sẽ in ra link dạng `http://127.0.0.1:8000/#token=...` — mở link
+đó là đăng nhập luôn (token được lưu trong trình duyệt). Muốn token cố
+định thì đặt `DASHBOARD_TOKEN` trong `.env`.
+
+Chạy dashboard kèm lịch tự động (lịch chạy ngay trong tiến trình
+dashboard, xoay vòng qua danh sách chủ đề):
+
+```bash
+ai-content-agent dashboard --cron "0 9 * * *" --topic "Chủ đề 1" --topic "Chủ đề 2" --platform youtube --platform tiktok
+```
+
+Dashboard có:
+- Thống kê: số video, lượt đăng theo nền tảng, lỗi 7 ngày qua.
+- Form tạo video: chọn nền tảng (nền tảng chưa cấu hình bị khóa kèm lý
+  do), chạy thử, đăng lại topic trùng.
+- Tiến trình job realtime (đang chờ → đang chạy → thành công / một
+  phần / bỏ qua / thất bại).
+- Lịch tự động: cron, lần chạy tới, chủ đề tiếp theo.
+- Lịch sử kèm link bài đã đăng, và log lỗi theo từng bước (khởi tạo,
+  viết script, tạo video, thumbnail, đăng bài).
+
+**Bảo mật:** mọi API của dashboard đều yêu cầu token, kể cả trên
+localhost, vì dashboard có thể đăng bài thật lên tài khoản của bạn. Mặc
+định chỉ nghe trên `127.0.0.1`. Nếu mở ra mạng ngoài (`--host 0.0.0.0`),
+hãy đặt sau reverse proxy có HTTPS để token không bị gửi dạng plain text.
+
 ## Setup từng nền tảng
 
 ### YouTube
@@ -151,8 +194,10 @@ pytest
 Test dùng provider/publisher giả — không gọi API thật (không tốn tiền,
 không cần key). Bao gồm: interface compliance, pipeline end-to-end,
 chống trùng topic, `--force`, dry-run, publisher lỗi không chặn
-publisher khác, và tạo thumbnail thật bằng ffmpeg (tự skip nếu máy
-không có ffmpeg).
+publisher khác, ghi log lỗi từng bước, parse JSON từ model (kể cả khi bọc
+trong ```` ```json ````), toàn bộ API dashboard (xác thực token, trạng thái
+job, validate input, không lộ secret), và tạo thumbnail thật bằng ffmpeg
+(tự skip nếu máy không có ffmpeg).
 
 ## Roadmap
 
@@ -162,7 +207,11 @@ không có ffmpeg).
 - [x] Thêm bước tạo thumbnail tự động.
 - [x] Thêm bước lưu lịch sử đã đăng (tránh trùng topic) — SQLite đơn giản.
 - [x] Xem lịch sử qua CLI (`ai-content-agent history`).
-- [ ] Dashboard web xem lịch đăng / log lỗi.
+- [x] Dashboard web xem lịch đăng / log lỗi / tạo video.
+- [x] Kết nối Meta Muse Spark (text) qua Meta Model API.
 - [ ] Tự upload video lên storage public (S3/GCS) để Instagram dùng được
       ngay trong pipeline.
-- [ ] Điền API thật cho Meta Muse khi có quyền truy cập.
+- [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
+      `MetaMuseVideoProvider.generate_video()`.
+- [ ] Quản lý danh sách chủ đề cho lịch tự động ngay trên dashboard
+      (hiện truyền qua `--topic` khi khởi động).

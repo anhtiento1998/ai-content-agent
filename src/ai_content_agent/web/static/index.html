@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Content Agent</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div>
+        <h1>AI Content Agent</h1>
+        <p class="muted" id="updated-at">Đang tải…</p>
+      </div>
+      <div class="chips" id="provider-chips"></div>
+    </div>
+  </header>
+
+  <section class="auth" id="auth" hidden>
+    <form class="card auth-card" id="auth-form">
+      <h2>Nhập token dashboard</h2>
+      <p class="muted">Token được in ra terminal khi chạy <code>ai-content-agent dashboard</code>, hoặc là giá trị <code>DASHBOARD_TOKEN</code> trong <code>.env</code>.</p>
+      <input type="password" id="auth-token" autocomplete="off" required placeholder="Token">
+      <button type="submit" class="btn primary">Đăng nhập</button>
+      <p class="form-error" id="auth-error" hidden>Token không đúng.</p>
+    </form>
+  </section>
+
+  <main class="container" id="app" hidden>
+    <section class="stats" id="stats">
+      <div class="card stat"><span class="stat-label">Video đã tạo</span><span class="stat-value" id="stat-runs">–</span></div>
+      <div class="card stat"><span class="stat-label">Lượt đăng thành công</span><span class="stat-value" id="stat-publishes">–</span><span class="stat-sub" id="stat-platforms"></span></div>
+      <div class="card stat"><span class="stat-label">Lỗi 7 ngày qua</span><span class="stat-value" id="stat-errors">–</span></div>
+      <div class="card stat"><span class="stat-label">Lần chạy gần nhất</span><span class="stat-value small" id="stat-last">–</span></div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Tạo video mới</h2>
+        <form id="run-form" novalidate>
+          <label class="field">
+            <span>Chủ đề</span>
+            <input type="text" id="topic" maxlength="300" required placeholder="VD: 5 mẹo tiết kiệm điện mùa hè">
+          </label>
+          <label class="field">
+            <span>Phong cách <small class="muted">(không bắt buộc)</small></span>
+            <input type="text" id="style" maxlength="300" placeholder="VD: hài hước, nhịp nhanh">
+          </label>
+          <fieldset class="field">
+            <legend>Đăng lên</legend>
+            <div class="platforms" id="platforms"></div>
+          </fieldset>
+          <div class="toggles">
+            <label class="check"><input type="checkbox" id="dry-run"> Chạy thử (chỉ tạo, không đăng)</label>
+            <label class="check"><input type="checkbox" id="force"> Đăng lại kể cả khi topic đã đăng gần đây</label>
+          </div>
+          <p class="form-error" id="run-error" hidden></p>
+          <button type="submit" class="btn primary" id="run-submit">Tạo &amp; đăng</button>
+        </form>
+      </section>
+
+      <div class="stack">
+        <section class="card">
+          <h2>Lịch tự động</h2>
+          <div id="schedule"></div>
+        </section>
+        <section class="card">
+          <h2>Tiến trình</h2>
+          <ul class="jobs" id="jobs"></ul>
+        </section>
+      </div>
+    </div>
+
+    <section class="card">
+      <h2>Lịch sử</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Thời gian</th><th>Tiêu đề</th><th>Chủ đề</th><th>Đã đăng</th></tr></thead>
+          <tbody id="runs"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Lỗi gần đây</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Thời gian</th><th>Bước</th><th>Nền tảng</th><th>Chủ đề</th><th>Chi tiết</th></tr></thead>
+          <tbody id="errors"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

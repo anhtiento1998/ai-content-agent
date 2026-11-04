@@ -47,7 +47,14 @@ class InstagramPublisher(Publisher):
         self._ig_user_id = ig_user_id
         self._access_token = access_token
 
-    def publish(self, video: VideoResult, script: ScriptResult, *, video_public_url: str) -> PublishResult:
+    def publish(
+        self, video: VideoResult, script: ScriptResult, *, video_public_url: str | None = None
+    ) -> PublishResult:
+        if not video_public_url:
+            raise ValueError(
+                "Instagram Reels needs the video at a public URL; automatic upload to "
+                "S3/GCS is not implemented yet (see README roadmap)"
+            )
         create_resp = requests.post(
             f"{_GRAPH}/{self._ig_user_id}/media",
             params={

@@ -36,7 +36,18 @@ def main() -> None:
     history_p = sub.add_parser("history", help="Show recently generated/published runs")
     history_p.add_argument("--limit", type=int, default=20)
 
+    dash_p = sub.add_parser("dashboard", help="Start the web dashboard")
+    dash_p.add_argument("--host", default="127.0.0.1")
+    dash_p.add_argument("--port", type=int, default=8000)
+    dash_p.add_argument("--cron", help="Also run automatically on this schedule, e.g. '0 9 * * *'")
+    dash_p.add_argument("--topic", action="append", dest="topics", default=[], help="Repeatable; used with --cron")
+    dash_p.add_argument(
+        "--platform", action="append", dest="platforms", default=[], help="Repeatable; used with --cron"
+    )
+
     args = parser.parse_args()
+    if args.command == "dashboard" and args.cron and not (args.topics and args.platforms):
+        dash_p.error("--cron needs at least one --topic and one --platform")
     config = Config.from_env()
     agent = ContentAgent(config)
 
@@ -58,7 +69,15 @@ def main() -> None:
 
         store = HistoryStore(config.history_db_path)
         for run in store.recent_runs(limit=args.limit):
-            print(f"[{run.created_at}] #{run.id} {run.title!r} (topic={run.topic!r}) -> {run.video_path}")
+            platforms = ", ".join(p.platform for p in run.publishes) or "not published"
+            print(f"[{run.created_at}] #{run.id} {run.title!r} (topic={run.topic!r}) -> {platforms}")
+
+    elif args.command == "dashboard":
+        from ai_content_agent.web.server import serve
+
+        serve(
+            config, host=args.host, port=args.port, cron=args.cron, topics=args.topics, platforms=args.platforms
+        )
 
 
 if __name__ == "__main__":

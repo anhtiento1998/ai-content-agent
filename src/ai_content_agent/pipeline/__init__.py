@@ -1,4 +1,4 @@
 from .content_pipeline import ContentPipeline
-from .scheduler import run_forever
+from .scheduler import TopicRotation, run_forever, start_background
 
-__all__ = ["ContentPipeline", "run_forever"]
+__all__ = ["ContentPipeline", "TopicRotation", "run_forever", "start_background"]

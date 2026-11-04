@@ -7,18 +7,19 @@ VideoGenerator in a new module here, then add one line below.
 from .anthropic_provider import AnthropicProvider
 from .base import ScriptResult, TextGenerator, VideoGenerator, VideoResult
 from .google_provider import GeminiProvider, VeoProvider
-from .meta_muse_provider import MetaMuseProvider
+from .meta_muse_provider import MetaMuseVideoProvider, MuseSparkProvider
 from .openai_provider import OpenAIProvider
 
 TEXT_PROVIDERS = {
     "gpt": OpenAIProvider,
     "claude": AnthropicProvider,
     "gemini": GeminiProvider,
+    "muse": MuseSparkProvider,
 }
 
 VIDEO_PROVIDERS = {
     "veo": VeoProvider,
-    "muse": MetaMuseProvider,
+    "muse": MetaMuseVideoProvider,
 }
 
 __all__ = [
@@ -30,7 +31,8 @@ __all__ = [
     "AnthropicProvider",
     "GeminiProvider",
     "VeoProvider",
-    "MetaMuseProvider",
+    "MuseSparkProvider",
+    "MetaMuseVideoProvider",
     "TEXT_PROVIDERS",
     "VIDEO_PROVIDERS",
 ]

@@ -8,19 +8,14 @@ anything else in the pipeline.
 from __future__ import annotations
 
 import logging
-import re
 
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import TextGenerator, VideoGenerator
 from ai_content_agent.publishers.base import Publisher, PublishResult
+from ai_content_agent.utils import slugify
 
 logger = logging.getLogger(__name__)
-
-
-def _slugify(text: str, max_len: int = 40) -> str:
-    slug = re.sub(r"[^\w]+", "_", text.strip().lower()).strip("_")
-    return slug[:max_len] or "video"
 
 
 class ContentPipeline:
@@ -43,8 +38,19 @@ class ContentPipeline:
         self._make_thumbnails = make_thumbnails
         self._thumbnail_dir = thumbnail_dir
 
+    @property
+    def publisher_names(self) -> list[str]:
+        return [p.name for p in self._publishers]
+
+    def is_duplicate(self, topic: str) -> bool:
+        return bool(self._history) and self._history.has_recent_topic(topic, within_days=self._dedup_window_days)
+
+    def _record_error(self, topic: str, stage: str, exc: Exception, **kwargs) -> None:
+        if self._history:
+            self._history.record_error(topic, stage, f"{type(exc).__name__}: {exc}", **kwargs)
+
     def run(self, topic: str, *, style: str = "", dry_run: bool = False, force: bool = False) -> list[PublishResult]:
-        if self._history and not force and self._history.has_recent_topic(topic, within_days=self._dedup_window_days):
+        if not force and self.is_duplicate(topic):
             logger.warning(
                 "Skipping topic=%r — already published within the last %d days (pass force=True to override)",
                 topic,
@@ -53,18 +59,27 @@ class ContentPipeline:
             return []
 
         logger.info("Generating script for topic=%r via %s", topic, self._text_generator.name)
-        script = self._text_generator.generate_script(topic, style=style)
+        try:
+            script = self._text_generator.generate_script(topic, style=style)
+        except Exception as exc:
+            self._record_error(topic, "script", exc)
+            raise
 
         logger.info("Generating video via %s", self._video_generator.name)
-        video = self._video_generator.generate_video(script)
+        try:
+            video = self._video_generator.generate_video(script)
+        except Exception as exc:
+            self._record_error(topic, "video", exc)
+            raise
 
         if self._make_thumbnails:
             try:
                 video.thumbnail_path = generate_thumbnail(
-                    video.file_path, script.title, f"{self._thumbnail_dir}/{_slugify(script.title)}.jpg"
+                    video.file_path, script.title, f"{self._thumbnail_dir}/{slugify(script.title)}.jpg"
                 )
-            except Exception:
+            except Exception as exc:
                 logger.exception("Thumbnail generation failed — continuing without one")
+                self._record_error(topic, "thumbnail", exc)
 
         if dry_run:
             logger.info("Dry run — skipping publish. Script=%s Video=%s", script, video)
@@ -77,9 +92,11 @@ class ContentPipeline:
             logger.info("Publishing to %s", publisher.name)
             try:
                 result = publisher.publish(video, script)
-                results.append(result)
-                if self._history and run_id is not None:
-                    self._history.record_publish(run_id, result)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Publish to %s failed", publisher.name)
+                self._record_error(topic, "publish", exc, run_id=run_id, platform=publisher.name)
+                continue
+            results.append(result)
+            if self._history and run_id is not None:
+                self._history.record_publish(run_id, result)
         return results

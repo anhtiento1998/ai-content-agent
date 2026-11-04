@@ -11,12 +11,14 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "requests>=2.32",
     "python-dotenv>=1.0",
-    "apscheduler>=3.10",
+    "apscheduler>=3.10,<4",
     "Pillow>=10.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 ai-content-agent = "ai_content_agent.cli:main"
@@ -27,3 +29,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ai_content_agent = ["web/static/*"]

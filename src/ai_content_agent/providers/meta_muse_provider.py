@@ -1,31 +1,42 @@
-"""Meta Muse video generation.
+"""Meta Muse models via the official Meta Model API.
 
-Meta has not published a stable, public REST API for Muse at the time this
-scaffold was written, so this is an interface stub rather than a working
-client: fill in `_endpoint` and the request/response shape once you have
-access (developer portal docs, or an internal API key) and it will slot
-into the pipeline like any other VideoGenerator.
+Status as of Oct 2026:
+- Muse Spark (text): available through the Meta Model API (public preview,
+  US developers only). The API is OpenAI-compatible, so MuseSparkProvider
+  reuses the OpenAI SDK pointed at Meta's base URL.
+- Muse Video: no official developer API yet. MetaMuseVideoProvider fails
+  fast so a pipeline configured with it doesn't spend money generating a
+  script it can never render. Third-party wrappers that drive the consumer
+  muse.ai subscription are intentionally not supported.
 """
 
 from __future__ import annotations
 
-import requests
-
 from .base import ScriptResult, VideoGenerator, VideoResult
+from .openai_provider import OpenAIProvider
 
 
-class MetaMuseProvider(VideoGenerator):
+class MuseSparkProvider(OpenAIProvider):
     name = "muse"
 
-    def __init__(self, api_key: str, endpoint: str = "") -> None:
-        self._api_key = api_key
-        self._endpoint = endpoint or "https://graph.meta.com/v1/muse/generate"  # TODO: confirm real endpoint
+    def __init__(self, api_key: str, base_url: str, model: str = "muse-spark-1.1") -> None:
+        if not base_url:
+            raise ValueError(
+                "META_MODEL_API_BASE_URL is not set — copy the base URL from the "
+                "Meta Model API docs (https://dev.meta.ai/docs) into .env"
+            )
+        super().__init__(api_key=api_key, model=model, base_url=base_url)
+
+
+class MetaMuseVideoProvider(VideoGenerator):
+    name = "muse"
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        raise NotImplementedError(
+            "Meta has not released a developer API for Muse Video yet. "
+            "Use VIDEO_PROVIDER=veo for now; implement generate_video() here once "
+            "the Meta Model API lists a video model."
+        )
 
     def generate_video(self, script: ScriptResult, *, aspect_ratio: str = "9:16") -> VideoResult:
-        raise NotImplementedError(
-            "MetaMuseProvider is a stub — set the real Muse API endpoint/payload "
-            "once you have access, then implement the request below:\n"
-            "  response = requests.post(self._endpoint, headers={'Authorization': "
-            "f'Bearer {self._api_key}'}, json={'prompt': script.script, "
-            "'aspect_ratio': aspect_ratio})"
-        )
+        raise NotImplementedError

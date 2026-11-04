@@ -26,6 +26,10 @@ class ContentAgent:
             return TEXT_PROVIDERS["claude"](api_key=self._config.anthropic_api_key)
         if provider == "gemini":
             return TEXT_PROVIDERS["gemini"](api_key=self._config.google_api_key)
+        if provider == "muse":
+            return TEXT_PROVIDERS["muse"](
+                api_key=self._config.meta_model_api_key, base_url=self._config.meta_model_api_base_url
+            )
         raise ValueError(f"Unknown text provider: {provider!r}")
 
     def _build_video_generator(self):
@@ -33,7 +37,7 @@ class ContentAgent:
         if provider == "veo":
             return VIDEO_PROVIDERS["veo"](api_key=self._config.google_api_key)
         if provider == "muse":
-            return VIDEO_PROVIDERS["muse"](api_key=self._config.meta_muse_api_key)
+            return VIDEO_PROVIDERS["muse"]()
         raise ValueError(f"Unknown video provider: {provider!r}")
 
     def _build_publishers(self, platforms: list[str]) -> list[Publisher]:
