@@ -60,7 +60,7 @@ def serve(
             cron=cron,
             platforms=list(platforms or []),
             rotation=rotation,
-            scheduler=start_background(_scheduled, cron),
+            scheduler=start_background(_scheduled, cron, timezone=config.schedule_timezone),
             skip=recently_published,
         )
 
@@ -72,6 +72,7 @@ def serve(
         config_status=config.status(),
         schedule=schedule,
         capcut_exporter=agent.capcut_exporter(),
+        pipeline_factory=agent.build_pipeline,
     )
 
     if not _is_loopback(host):

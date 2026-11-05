@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from ai_content_agent.export.capcut import CapCutExporter
-from ai_content_agent.history import HistoryStore
+from ai_content_agent.history import PENDING, REJECTED, HistoryStore
+from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.pipeline.scheduler import TopicRotation
 from ai_content_agent.publishers import PUBLISHERS
 from ai_content_agent.web.jobs import JobManager
@@ -28,7 +29,9 @@ STATIC_DIR = Path(__file__).parent / "static"
 Platform = Literal[tuple(PUBLISHERS)]  # type: ignore[valid-type]  # stays in sync with the registry
 
 _SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'"
+    ),
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "no-referrer",
 }
@@ -52,6 +55,14 @@ class RunRequest(BaseModel):
         return self
 
 
+class PublishRequest(BaseModel):
+    platforms: list[Platform] = Field(default_factory=list)
+
+
+class TakedownRequest(BaseModel):
+    platform: Platform
+
+
 @dataclass
 class ScheduleInfo:
     cron: str
@@ -69,6 +80,7 @@ def create_app(
     config_status: dict,
     schedule: ScheduleInfo | None = None,
     capcut_exporter: CapCutExporter | None = None,
+    pipeline_factory: Callable[..., ContentPipeline] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Content Agent", docs_url=None, redoc_url=None, openapi_url=None)
     expected = token.encode()
@@ -98,6 +110,77 @@ def create_app(
     def create_run(body: RunRequest) -> dict:
         job = jobs.submit(body.topic, body.platforms, style=body.style, dry_run=body.dry_run, force=body.force)
         return asdict(job)
+
+    def _run_or_404(run_id: int):
+        run = history.get_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return run
+
+    def _media(path: str | None, media_type: str) -> FileResponse:
+        # Paths come from the server's own run record, never from the client.
+        if not path or not Path(path).is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(path, media_type=media_type)
+
+    @api.get("/reviews")
+    def reviews() -> list[dict]:
+        return [asdict(run) for run in history.pending_runs()]
+
+    @api.get("/runs/{run_id}/video")
+    def run_video(run_id: int) -> FileResponse:
+        return _media(_run_or_404(run_id).video_path, "video/mp4")
+
+    @api.get("/runs/{run_id}/thumbnail")
+    def run_thumbnail(run_id: int) -> FileResponse:
+        return _media(_run_or_404(run_id).thumbnail_path, "image/jpeg")
+
+    @api.post("/runs/{run_id}/approve", status_code=202)
+    def approve(run_id: int, body: PublishRequest | None = None) -> dict:
+        run = _run_or_404(run_id)
+        if run.status != PENDING:
+            raise HTTPException(status_code=409, detail=f"Run is {run.status}, not waiting for review")
+        platforms = list(dict.fromkeys((body.platforms if body else None) or run.platforms))
+        if not platforms:
+            raise HTTPException(status_code=422, detail="choose at least one platform")
+        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="review"))
+
+    @api.post("/runs/{run_id}/reject")
+    def reject(run_id: int) -> dict:
+        run = _run_or_404(run_id)
+        if run.status != PENDING:
+            raise HTTPException(status_code=409, detail=f"Run is {run.status}, not waiting for review")
+        history.set_run_status(run.id, REJECTED)
+        return {"status": REJECTED}
+
+    @api.post("/runs/{run_id}/publish", status_code=202)
+    def republish(run_id: int, body: PublishRequest) -> dict:
+        """Retry: publish a run to platforms it is not live on yet (live ones are skipped)."""
+
+        run = _run_or_404(run_id)
+        if run.status in (PENDING, REJECTED):
+            raise HTTPException(status_code=409, detail=f"Run is {run.status}; approve or produce it instead")
+        platforms = list(dict.fromkeys(body.platforms or run.platforms))
+        if not platforms:
+            raise HTTPException(status_code=422, detail="choose at least one platform")
+        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="retry"))
+
+    @api.post("/runs/{run_id}/takedown")
+    def takedown(run_id: int, body: TakedownRequest) -> dict:
+        run = _run_or_404(run_id)
+        if pipeline_factory is None:
+            raise HTTPException(status_code=501, detail="Takedown is not available on this server")
+        try:
+            pipeline_factory([body.platform], publish_only=True).takedown(run.id, body.platform)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        except Exception as exc:
+            history.record_error(run.topic, "takedown", f"{type(exc).__name__}: {exc}", run_id=run.id,
+                                 platform=body.platform)
+            raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
+        return {"status": "taken_down", "platform": body.platform}
 
     @api.get("/errors")
     def errors(limit: int = Query(20, ge=1, le=200)) -> list[dict]:

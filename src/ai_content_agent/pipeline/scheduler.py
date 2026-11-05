@@ -56,19 +56,31 @@ ALL_TOPICS_USED = (
 )
 
 
-def start_background(job: Callable[[], None], cron_expr: str):
-    from apscheduler.schedulers.background import BackgroundScheduler
+# A run missed because the machine slept or was busy still fires when it wakes, if within
+# this window; several missed runs collapse into one (APScheduler's default grace is 1 s).
+MISFIRE_GRACE_SECONDS = 6 * 3600
+
+
+def _trigger(cron_expr: str, timezone: str | None):
     from apscheduler.triggers.cron import CronTrigger
 
+    return CronTrigger.from_crontab(cron_expr, timezone=timezone) if timezone else CronTrigger.from_crontab(cron_expr)
+
+
+def start_background(job: Callable[[], None], cron_expr: str, *, timezone: str | None = None):
+    from apscheduler.schedulers.background import BackgroundScheduler
+
     scheduler = BackgroundScheduler()
-    scheduler.add_job(job, CronTrigger.from_crontab(cron_expr), id="content-run")
+    scheduler.add_job(job, _trigger(cron_expr, timezone), id="content-run",
+                      misfire_grace_time=MISFIRE_GRACE_SECONDS, coalesce=True)
     scheduler.start()
     return scheduler
 
 
-def run_forever(pipeline: ContentPipeline, topics: list[str], *, cron_expr: str = "0 9 * * *") -> None:
+def run_forever(
+    pipeline: ContentPipeline, topics: list[str], *, cron_expr: str = "0 9 * * *", timezone: str | None = None
+) -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
-    from apscheduler.triggers.cron import CronTrigger
 
     rotation = TopicRotation(topics)
     scheduler = BlockingScheduler()
@@ -84,6 +96,6 @@ def run_forever(pipeline: ContentPipeline, topics: list[str], *, cron_expr: str 
         except Exception:
             logger.exception("Scheduled run for topic=%r failed", topic)
 
-    scheduler.add_job(_job, CronTrigger.from_crontab(cron_expr))
-    logger.info("Scheduler started with cron=%r, %d topics queued", cron_expr, len(topics))
+    scheduler.add_job(_job, _trigger(cron_expr, timezone), misfire_grace_time=MISFIRE_GRACE_SECONDS, coalesce=True)
+    logger.info("Scheduler started with cron=%r (%s), %d topics queued", cron_expr, timezone or "local", len(topics))
     scheduler.start()

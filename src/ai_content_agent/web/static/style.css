@@ -351,6 +351,31 @@ input[type="text"]:focus, input[type="password"]:focus {
 .job.is-failed .thruster-fill { background: var(--red); }
 .job.is-partial .thruster-fill { background: linear-gradient(90deg, var(--cyan), var(--amber)); }
 
+/* ---------- review queue ---------- */
+.dot.warn { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: blink 1.6s ease-in-out infinite; }
+.count-badge { display: inline-grid; place-items: center; min-width: 24px; height: 22px; padding: 0 7px; margin-left: 6px; border-radius: 999px; font: 700 0.75rem var(--mono); color: #1a1200; background: var(--amber); vertical-align: 2px; }
+.count-badge.zero { color: var(--muted); background: rgba(143, 153, 192, 0.15); }
+.reviews { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 14px; }
+.reviews .empty-state { color: var(--muted); font: 0.85rem var(--mono); padding: 10px 2px; }
+.review-card { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 14px; padding: 12px; border: 1px solid rgba(255, 200, 87, 0.35); border-radius: 12px; background: rgba(4, 6, 18, 0.55); animation: panel-in 0.4s ease-out both; }
+.review-media { position: relative; width: 112px; aspect-ratio: 9 / 16; border-radius: 8px; overflow: hidden; background: #000; border: 1px solid var(--panel-border); }
+.review-media img, .review-media video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.review-media .play { position: absolute; inset: 0; display: grid; place-items: center; border: 0; cursor: pointer; color: #fff; font-size: 1.6rem; background: linear-gradient(transparent 40%, rgba(0, 0, 0, 0.55)); }
+.review-media .play:hover { background: rgba(77, 227, 255, 0.15); }
+.review-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.review-title { font-weight: 650; overflow-wrap: anywhere; }
+.review-platforms { display: flex; flex-wrap: wrap; gap: 6px 12px; font-size: 0.82rem; }
+.review-platforms label { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.review-platforms input { accent-color: var(--cyan); }
+.review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
+.btn.small.ok { color: var(--green); border-color: rgba(61, 255, 168, 0.5); background: rgba(61, 255, 168, 0.08); }
+.btn.small.ok:hover:not(:disabled) { border-color: var(--green); box-shadow: 0 0 16px rgba(61, 255, 168, 0.3); }
+.btn.small.bad { color: var(--red); border-color: rgba(255, 84, 112, 0.5); background: rgba(255, 84, 112, 0.06); }
+.btn.small.bad:hover:not(:disabled) { border-color: var(--red); box-shadow: 0 0 16px rgba(255, 84, 112, 0.3); }
+.row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.row-actions .btn.small { padding: 3px 9px; font-size: 0.68rem; }
+.taken-down { text-decoration: line-through; color: var(--faint); }
+
 /* ---------- orbit schedule ---------- */
 .orbit-wrap { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 18px; align-items: center; }
 .orbit { position: relative; width: 150px; height: 150px; }

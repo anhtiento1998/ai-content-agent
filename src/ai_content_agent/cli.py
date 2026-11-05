@@ -53,6 +53,20 @@ def main() -> None:
 
     sub.add_parser("youtube-auth", help="One-time YouTube consent in a browser; caches the token for publishing")
 
+    sub.add_parser("review", help="List rendered runs waiting for approval")
+    approve_p = sub.add_parser("approve", help="Approve a pending run and publish it")
+    approve_p.add_argument("run_id", type=int)
+    approve_p.add_argument("--platform", action="append", dest="platforms", choices=list(PUBLISHERS),
+                           help="Override the run's platforms (repeatable)")
+    reject_p = sub.add_parser("reject", help="Reject a pending run (it will not be published)")
+    reject_p.add_argument("run_id", type=int)
+    publish_p = sub.add_parser("publish", help="Retry publishing a run; platforms it is already live on are skipped")
+    publish_p.add_argument("run_id", type=int)
+    publish_p.add_argument("--platform", action="append", dest="platforms", choices=list(PUBLISHERS))
+    takedown_p = sub.add_parser("takedown", help="Delete a run's post from a platform")
+    takedown_p.add_argument("run_id", type=int)
+    takedown_p.add_argument("--platform", required=True, choices=list(PUBLISHERS))
+
     capcut_p = sub.add_parser("capcut", help="Export a rendered run as an editable CapCut desktop draft")
     capcut_p.add_argument("work_dir", nargs="?", help="Run folder under OUTPUT_DIR (default: the latest run)")
     capcut_p.add_argument("--drafts-dir", help="CapCut draft folder (default: CapCut's own, or CAPCUT_DRAFTS_DIR)")
@@ -91,6 +105,10 @@ def main() -> None:
         print(f"Video: {outcome.video.file_path} ({outcome.video.duration_seconds:.1f}s)")
         if outcome.capcut_draft:
             print(f"CapCut draft: {outcome.capcut_draft}")
+        if outcome.pending_review:
+            print(f"Waiting for review as run #{outcome.run_id} — approve with "
+                  f"`ai-content-agent approve {outcome.run_id}` or in the dashboard (REQUIRE_APPROVAL=true).")
+            return
         for result in outcome.published:
             print(f"{result.platform}: {result.url or result.remote_id}")
         failed = set(platforms) - {r.platform for r in outcome.published}
@@ -101,7 +119,7 @@ def main() -> None:
         from ai_content_agent.pipeline.scheduler import run_forever
 
         pipeline = agent.build_pipeline(args.platforms)
-        run_forever(pipeline, args.topics, cron_expr=args.cron)
+        run_forever(pipeline, args.topics, cron_expr=args.cron, timezone=config.schedule_timezone)
 
     elif args.command == "history":
         from ai_content_agent.history import HistoryStore
@@ -113,6 +131,9 @@ def main() -> None:
         for run in runs:
             platforms = ", ".join(p.platform for p in run.publishes) or "not published"
             print(f"[{run.created_at}] #{run.id} {run.title!r} (topic={run.topic!r}) -> {platforms}")
+
+    elif args.command in ("review", "approve", "reject", "publish", "takedown"):
+        _review_commands(args, agent, config)
 
     elif args.command == "capcut":
         from ai_content_agent.export.capcut import CapCutExporter
@@ -148,6 +169,55 @@ def main() -> None:
         serve(
             config, host=args.host, port=args.port, cron=args.cron, topics=args.topics, platforms=args.platforms
         )
+
+
+def _review_commands(args, agent: ContentAgent, config: Config) -> None:
+    from ai_content_agent.history import PENDING, REJECTED, HistoryStore
+
+    store = HistoryStore(config.history_db_path)
+    if args.command == "review":
+        runs = store.pending_runs()
+        if not runs:
+            print("Nothing waiting for review.")
+        for run in runs:
+            print(f"#{run.id} [{run.created_at}] {run.title!r} -> {', '.join(run.platforms) or '-'}\n    {run.video_path}")
+        return
+
+    run = store.get_run(args.run_id)
+    if run is None:
+        sys.exit(f"Run #{args.run_id} not found")
+
+    if args.command == "reject":
+        if run.status != PENDING:
+            sys.exit(f"Run #{run.id} is {run.status}, not waiting for review")
+        store.set_run_status(run.id, REJECTED)
+        print(f"Run #{run.id} rejected.")
+        return
+
+    if args.command == "takedown":
+        try:
+            agent.build_pipeline([args.platform], publish_only=True).takedown(run.id, args.platform)
+        except (ValueError, NotImplementedError) as exc:
+            sys.exit(f"Takedown failed: {exc}")
+        print(f"Run #{run.id} taken down on {args.platform}.")
+        return
+
+    if args.command == "approve" and run.status != PENDING:
+        sys.exit(f"Run #{run.id} is {run.status}, not waiting for review — use `publish` to retry")
+    if args.command == "publish" and run.status in (PENDING, REJECTED):
+        sys.exit(f"Run #{run.id} is {run.status} — approve it instead")
+    platforms = args.platforms or run.platforms
+    if not platforms:
+        sys.exit("No platforms: pass --platform")
+    try:
+        outcome = agent.build_pipeline(platforms, publish_only=True).publish_run(run.id)
+    except (ValueError, FileNotFoundError) as exc:
+        sys.exit(f"Publish failed: {exc}")
+    for result in outcome.published:
+        print(f"{result.platform}: {result.url or result.remote_id} ({result.status or 'ok'})")
+    failed = set(platforms) - {r.platform for r in outcome.published}
+    if failed:
+        print(f"Failed: {', '.join(sorted(failed))} — fix and retry with `ai-content-agent publish {run.id}`")
 
 
 if __name__ == "__main__":

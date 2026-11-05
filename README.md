@@ -165,6 +165,34 @@ ai-content-agent history --limit 20
 ai-content-agent schedule "Chủ đề 1" "Chủ đề 2" --cron "0 9 * * *" --platform youtube
 ```
 
+## Duyệt trước khi đăng, đăng lại, gỡ bài
+
+Mặc định (`REQUIRE_APPROVAL=true`) video dựng xong **không tự đăng**: nó vào
+khu **Chờ duyệt** trên dashboard (xem video ngay trên trang, chọn nền tảng,
+bấm *Duyệt & đăng* hoặc *Từ chối*). Lý do: YouTube từ 2026 xếp "sản xuất
+hàng loạt tự động/tổng hợp" vào chính sách spam (có thể bị gỡ kênh), và
+người vận hành có kinh nghiệm đều giữ bước người duyệt.
+
+- **Đăng lại**: lần chạy "Một phần"/"Thất bại" có nút *Đăng lại* — chỉ đăng
+  lên nền tảng chưa thành công, không dựng lại video, không đăng trùng.
+- **Gỡ bài**: nút *Gỡ* xóa bài trên YouTube/Facebook (TikTok không có API
+  xóa — app báo để gỡ tay trong ứng dụng). Chủ đề đã gỡ được phép làm lại.
+- **Giới hạn**: `MAX_POSTS_PER_DAY` (mặc định 3 bài/nền tảng/24 h).
+- **Khai báo AI**: `AI_DISCLOSURE=true` đặt cờ `containsSyntheticMedia`
+  (YouTube), `is_aigc` (TikTok) và ghi `AI_DISCLOSURE_TEXT` vào mô tả mọi
+  nền tảng (Nghị định 142/2026 chấp nhận nhãn trong tiêu đề/mô tả).
+
+CLI tương đương:
+
+```bash
+ai-content-agent review                       # danh sách chờ duyệt
+ai-content-agent approve 12                   # duyệt & đăng lần chạy #12
+ai-content-agent approve 12 --platform youtube
+ai-content-agent reject 12
+ai-content-agent publish 12                   # đăng lại nền tảng còn thiếu
+ai-content-agent takedown 12 --platform facebook
+```
+
 ## Dashboard web
 
 ```bash
@@ -178,7 +206,7 @@ Terminal sẽ in ra link dạng `http://127.0.0.1:8000/#token=...` — mở link
 Chạy dashboard kèm lịch tự động (lịch chạy ngay trong tiến trình
 dashboard, xoay vòng qua danh sách chủ đề, **tự bỏ qua chủ đề đã đăng
 trong `DEDUP_WINDOW_DAYS` ngày**; khi mọi chủ đề đều đã đăng gần đây, lần
-chạy được ghi vào mục Lỗi với hướng dẫn thêm chủ đề — nên danh sách chủ đề
+chạy được ghi vào mục Lỗi với hướng dẫn thêm chủ đề — giờ cron tính theo `SCHEDULE_TIMEZONE` (mặc định Asia/Ho_Chi_Minh), và lượt bị lỡ do máy ngủ/bận được chạy bù khi máy thức (trong 6 giờ) — nên danh sách chủ đề
 cần dài hơn số ngày của cửa sổ chống trùng nếu đăng mỗi ngày):
 
 ```bash
@@ -260,21 +288,41 @@ thời điểm bắt đầu/độ dài từng cảnh.
    đăng bài app **không bao giờ** mở trình duyệt (để không bị treo trên
    server); nếu thiếu token, job báo lỗi kèm hướng dẫn chạy lệnh trên. Chạy
    trên VPS thì xác thực ở máy bạn rồi copy file token lên.
+4. Trong Google Cloud, để màn hình OAuth consent ở trạng thái **In
+   production** (chế độ *Testing* làm refresh token hết hạn sau 7 ngày →
+   lịch tự động gãy âm thầm). Từ 1/6/2026 upload có quota riêng, mặc định
+   100 video/ngày/project. `YOUTUBE_PRIVACY` chọn public / unlisted /
+   private; app đọc lại trạng thái thật sau khi upload vì cài đặt kênh có
+   thể ghi đè.
 
 ### TikTok
 1. Tạo app trên [TikTok for Developers](https://developers.tiktok.com/),
    bật sản phẩm **Content Posting API** (Direct Post).
 2. Xin quyền `video.publish`.
-3. Lấy access token cho tài khoản mục tiêu, bỏ vào `TIKTOK_ACCESS_TOKEN`.
+3. Điền `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` và một
+   `TIKTOK_REFRESH_TOKEN` lấy từ luồng OAuth của app. App tự làm mới access
+   token (TikTok cấp token ngắn hạn — tài liệu ghi 2 h hoặc 24 h) và lưu
+   refresh token mới vào `tiktok_token.json`. `TIKTOK_ACCESS_TOKEN` tĩnh chỉ
+   là phương án tạm vì sẽ hết hạn trong vài giờ.
 4. Khi app chưa được TikTok audit, video chỉ đăng ở chế độ riêng tư
-   (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`). Audit xong thì đổi thành
-   `PUBLIC_TO_EVERYONE`.
+   (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`), tối đa 5 người dùng/24 h. Audit xong
+   thì đổi thành `PUBLIC_TO_EVERYONE`; mỗi tài khoản đăng được khoảng 15
+   bài/ngày. Lưu ý TikTok **từ chối audit** app "chỉ dùng cá nhân hoặc nội
+   bộ công ty".
+5. Trước mỗi bài app gọi `creator_info` (yêu cầu của TikTok) để kiểm tra
+   chế độ riêng tư và độ dài cho phép, đặt `is_aigc`, và chờ TikTok xử lý
+   xong để lấy link bài (nếu quá 3 phút thì ghi trạng thái "processing").
 
 ### Facebook Page
 1. Tạo app trên [Meta for Developers](https://developers.facebook.com/).
-2. Lấy Page access token dài hạn có quyền `pages_manage_posts` và
-   `pages_read_engagement`, điền `FACEBOOK_PAGE_ID` và
-   `FACEBOOK_ACCESS_TOKEN`.
+2. Lấy Page access token dài hạn có quyền `pages_manage_posts`,
+   `pages_read_engagement`, `pages_show_list` (token System User của
+   Business không phải đăng nhập lại mỗi 60 ngày), điền `FACEBOOK_PAGE_ID`
+   và `FACEBOOK_ACCESS_TOKEN`. Bản production cần App Review + Business
+   Verification.
+3. Video ≤ 90 giây được đăng dạng **Reels** (`/video_reels`, tối đa 30
+   reels/24 h/Page); dài hơn thì đăng thành video thường. Graph API không có
+   trường khai báo AI nên app ghi dòng `AI_DISCLOSURE_TEXT` vào mô tả.
 
 ## Mở rộng thêm nền tảng/engine mới
 

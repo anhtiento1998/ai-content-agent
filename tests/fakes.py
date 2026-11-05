@@ -83,6 +83,8 @@ class FakeStudio:
         report("render", 0, 0)
         if self._fail_stage:
             raise StudioStageError(self._fail_stage, f"scene 1: RuntimeError: {self._fail_stage} broke")
+        Path(self._video_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(self._video_path).write_bytes(b"fake mp4")
         storyboard = Storyboard(
             title=f"Title for {topic}",
             description="desc",
@@ -96,7 +98,11 @@ class FakePublisher(Publisher):
     def __init__(self, name="fake", fail=False):
         self.name = name
         self.published = []
+        self.deleted = []
         self._fail = fail
+
+    def delete(self, remote_id):
+        self.deleted.append(remote_id)
 
     def publish(self, video, script):
         if self._fail:

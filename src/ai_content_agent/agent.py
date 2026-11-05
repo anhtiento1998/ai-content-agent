@@ -12,7 +12,13 @@ from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.providers import TEXT_PROVIDERS, VISUAL_PROVIDERS, VOICE_PROVIDERS
-from ai_content_agent.publishers import FacebookPublisher, TikTokPublisher, YouTubePublisher
+from ai_content_agent.publishers import (
+    Disclosure,
+    FacebookPublisher,
+    TikTokPublisher,
+    TikTokTokens,
+    YouTubePublisher,
+)
 from ai_content_agent.publishers.base import Publisher
 from ai_content_agent.studio import StudioSettings, VideoStudio
 
@@ -73,42 +79,51 @@ class ContentAgent:
             ),
         )
 
-    def _build_publishers(self, platforms: list[str]) -> list[Publisher]:
+    def build_publishers(self, platforms: list[str]) -> list[Publisher]:
+        c = self._config
+        disclosure = Disclosure(enabled=c.ai_disclosure, text=c.ai_disclosure_text)
         publishers: list[Publisher] = []
         for platform in platforms:
             if platform == "youtube":
                 publishers.append(
                     YouTubePublisher(
-                        token_file=self._config.youtube_token_file,
-                        client_secret_file=self._config.youtube_client_secret_file,
+                        token_file=c.youtube_token_file,
+                        client_secret_file=c.youtube_client_secret_file,
+                        privacy=c.youtube_privacy,
+                        disclosure=disclosure,
                     )
                 )
             elif platform == "tiktok":
-                publishers.append(
-                    TikTokPublisher(
-                        access_token=self._config.tiktok_access_token,
-                        privacy_level=self._config.tiktok_privacy_level,
-                    )
+                tokens = TikTokTokens(
+                    access_token=c.tiktok_access_token,
+                    client_key=c.tiktok_client_key,
+                    client_secret=c.tiktok_client_secret,
+                    refresh_token=c.tiktok_refresh_token,
+                    token_file=c.tiktok_token_file,
                 )
+                publishers.append(TikTokPublisher(tokens, c.tiktok_privacy_level, disclosure=disclosure))
             elif platform == "facebook":
                 publishers.append(
-                    FacebookPublisher(
-                        page_id=self._config.facebook_page_id,
-                        access_token=self._config.facebook_access_token,
-                    )
+                    FacebookPublisher(page_id=c.facebook_page_id, access_token=c.facebook_access_token,
+                                      disclosure=disclosure)
                 )
             else:
                 raise ValueError(f"Unknown platform: {platform!r}")
         return publishers
 
-    def build_pipeline(self, platforms: list[str]) -> ContentPipeline:
+    def build_pipeline(self, platforms: list[str], *, publish_only: bool = False) -> ContentPipeline:
+        """`publish_only` skips building the AI engines — enough to approve, retry or take down runs."""
+
+        c = self._config
         return ContentPipeline(
-            studio=self.build_studio(),
-            publishers=self._build_publishers(platforms),
-            history=HistoryStore(self._config.history_db_path),
-            dedup_window_days=self._config.dedup_window_days,
-            make_thumbnails=self._config.make_thumbnails,
-            capcut_exporter=self.capcut_exporter() if self._config.capcut_export else None,
+            studio=None if publish_only else self.build_studio(),
+            publishers=self.build_publishers(platforms),
+            history=HistoryStore(c.history_db_path),
+            dedup_window_days=c.dedup_window_days,
+            make_thumbnails=c.make_thumbnails,
+            capcut_exporter=self.capcut_exporter() if c.capcut_export and not publish_only else None,
+            require_approval=c.require_approval,
+            max_posts_per_day=c.max_posts_per_day,
         )
 
     def capcut_exporter(self) -> CapCutExporter:

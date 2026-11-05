@@ -1,7 +1,8 @@
 """Background job runner for dashboard-triggered and scheduled pipeline runs.
 
-Jobs run one at a time on a single worker thread: video generation is slow
-and billed per call, so serialising keeps API spend and quota predictable.
+Two kinds of job share one worker thread: "produce" (render a topic, then
+queue it for review or publish it) and "publish" (approve or retry an
+already-rendered run). Serialising keeps API spend and quota predictable.
 Job state lives in memory only; durable results are in HistoryStore.
 """
 
@@ -17,13 +18,14 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ai_content_agent.history import HistoryStore
-from ai_content_agent.pipeline.content_pipeline import ContentPipeline
+from ai_content_agent.pipeline.content_pipeline import ContentPipeline, RunOutcome
 from ai_content_agent.studio import StudioStageError
 
 logger = logging.getLogger(__name__)
 
-PipelineFactory = Callable[[list[str]], ContentPipeline]
-_TERMINAL = {"succeeded", "partial", "skipped", "failed"}
+# factory(platforms, publish_only=False) -> ContentPipeline
+PipelineFactory = Callable[..., ContentPipeline]
+_TERMINAL = {"succeeded", "partial", "skipped", "failed", "review"}
 
 
 def _now() -> str:
@@ -39,6 +41,8 @@ class Job:
     dry_run: bool
     force: bool
     source: str
+    kind: str = "produce"
+    run_id: int | None = None
     status: str = "queued"
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -65,6 +69,13 @@ class JobManager:
         self._futures: dict[str, Future] = {}
         self._lock = threading.Lock()
 
+    def _enqueue(self, job: Job) -> Job:
+        with self._lock:
+            self._jobs[job.id] = job
+            self._evict_finished()
+            self._futures[job.id] = self._executor.submit(self._run, job)
+        return job
+
     def submit(
         self,
         topic: str,
@@ -75,20 +86,18 @@ class JobManager:
         force: bool = False,
         source: str = "manual",
     ) -> Job:
-        job = Job(
-            id=uuid.uuid4().hex[:12],
-            topic=topic,
-            platforms=list(platforms),
-            style=style,
-            dry_run=dry_run,
-            force=force,
-            source=source,
-        )
-        with self._lock:
-            self._jobs[job.id] = job
-            self._evict_finished()
-            self._futures[job.id] = self._executor.submit(self._run, job)
-        return job
+        return self._enqueue(Job(
+            id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style=style,
+            dry_run=dry_run, force=force, source=source,
+        ))
+
+    def submit_publish(self, run_id: int, topic: str, platforms: list[str], *, source: str = "review") -> Job:
+        """Publish an already-rendered run (approve from the review queue, or retry failed platforms)."""
+
+        return self._enqueue(Job(
+            id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style="", dry_run=False,
+            force=False, source=source, kind="publish", run_id=run_id,
+        ))
 
     def _evict_finished(self) -> None:
         for job_id in [j.id for j in self._jobs.values() if j.status in _TERMINAL]:
@@ -100,41 +109,26 @@ class JobManager:
     def _run(self, job: Job) -> None:
         job.status = "running"
         job.started_at = _now()
+
+        def progress(stage: str, done: int, total: int) -> None:
+            job.stage, job.stage_done, job.stage_total = stage, done, total
+
         try:
             try:
-                pipeline = self._factory(job.platforms)
+                pipeline = self._factory(job.platforms, publish_only=job.kind == "publish")
             except Exception as exc:
                 job.failed_stage = "setup"
                 if self._history:
                     self._history.record_error(job.topic, "setup", f"{type(exc).__name__}: {exc}")
                 raise
 
-            def progress(stage: str, done: int, total: int) -> None:
-                job.stage, job.stage_done, job.stage_total = stage, done, total
-
-            outcome = pipeline.run(
-                job.topic, style=job.style, dry_run=job.dry_run, force=job.force, progress=progress
-            )
-            if outcome.skipped:
-                job.status = "skipped"
-                job.error = "Topic này đã được đăng gần đây — bật “Đăng lại” để bỏ qua kiểm tra trùng."
-                return
-
-            job.video_path = outcome.video.file_path if outcome.video else None
-            job.capcut_draft = outcome.capcut_draft
-            job.results = [
-                {"platform": r.platform, "remote_id": r.remote_id, "url": r.url} for r in outcome.published
-            ]
-            if job.dry_run:
-                job.status = "succeeded"
-            elif not outcome.published:
-                job.status = "failed"
-                job.failed_stage = "publish"
-                job.error = "Đăng thất bại trên mọi nền tảng — xem mục Lỗi gần đây."
-            elif len(outcome.published) < len(job.platforms):
-                job.status = "partial"
+            if job.kind == "publish":
+                outcome = pipeline.publish_run(job.run_id, progress=progress)
             else:
-                job.status = "succeeded"
+                outcome = pipeline.run(
+                    job.topic, style=job.style, dry_run=job.dry_run, force=job.force, progress=progress
+                )
+            self._finish(job, outcome)
         except StudioStageError as exc:
             logger.exception("Job %s failed at stage %s", job.id, exc.stage)
             job.status = "failed"
@@ -143,9 +137,36 @@ class JobManager:
         except Exception as exc:
             logger.exception("Job %s failed", job.id)
             job.status = "failed"
+            job.failed_stage = job.failed_stage or ("publish" if job.kind == "publish" else None)
             job.error = f"{type(exc).__name__}: {exc}"
         finally:
             job.finished_at = _now()
+
+    @staticmethod
+    def _finish(job: Job, outcome: RunOutcome) -> None:
+        if outcome.skipped:
+            job.status = "skipped"
+            job.error = "Topic này đã được đăng hoặc đang chờ duyệt — bật “Đăng lại” để bỏ qua kiểm tra trùng."
+            return
+        job.run_id = outcome.run_id or job.run_id
+        job.video_path = outcome.video.file_path if outcome.video else None
+        job.capcut_draft = outcome.capcut_draft
+        job.results = [
+            {"platform": r.platform, "remote_id": r.remote_id, "url": r.url, "status": r.status}
+            for r in outcome.published
+        ]
+        if job.dry_run:
+            job.status = "succeeded"
+        elif outcome.pending_review:
+            job.status = "review"
+        elif not outcome.published:
+            job.status = "failed"
+            job.failed_stage = "publish"
+            job.error = "Đăng thất bại trên mọi nền tảng — xem mục Lỗi gần đây."
+        elif len(outcome.published) < len(job.platforms):
+            job.status = "partial"
+        else:
+            job.status = "succeeded"
 
     def list(self) -> list[dict]:
         with self._lock:

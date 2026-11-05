@@ -13,8 +13,16 @@ const JOB_STATUS = {
   partial: ["Một phần", "warn"],
   skipped: ["Bỏ qua", "neutral"],
   failed: ["Thất bại", "bad"],
+  review: ["Chờ duyệt", "warn"],
 };
-const TERMINAL = new Set(["succeeded", "partial", "skipped", "failed"]);
+const RUN_STATUS = {
+  pending_review: ["Chờ duyệt", "warn"],
+  published: ["Đã đăng", "ok"],
+  partial: ["Một phần", "warn"],
+  failed: ["Thất bại", "bad"],
+  rejected: ["Từ chối", "neutral"],
+};
+const TERMINAL = new Set(["succeeded", "partial", "skipped", "failed", "review"]);
 const STAGES = {
   setup: "Khởi tạo",
   schedule: "Lịch tự động",
@@ -25,6 +33,7 @@ const STAGES = {
   video: "Tạo video",
   thumbnail: "Thumbnail",
   publish: "Đăng bài",
+  takedown: "Gỡ bài",
   capcut: "Xuất CapCut",
 };
 const ENGINE_CHIPS = [
@@ -335,6 +344,7 @@ function renderConfig(cfg) {
 
 function renderStats(stats) {
   setNumber($("stat-runs"), stats.total_runs);
+  $("stat-runs").nextElementSibling.textContent = stats.pending_review ? `video đã sản xuất · ${stats.pending_review} chờ duyệt` : "video đã sản xuất";
   setNumber($("stat-publishes"), stats.total_publishes);
   setNumber($("stat-errors"), stats.errors_last_7_days);
   $("stat-last").textContent = relativeTime(stats.last_run_at);
@@ -401,10 +411,15 @@ function tickCountdown() {
 
 /** Per-step state for the launch sequence, derived from real job progress. */
 function sequenceFor(job) {
-  const steps = job.dry_run ? SEQUENCE.slice(0, 3) : SEQUENCE;
+  // Publish jobs (approve/retry) only have the publish step; dry runs stop after rendering.
+  const steps = job.kind === "publish" ? SEQUENCE.slice(3) : job.dry_run ? SEQUENCE.slice(0, 3) : SEQUENCE;
   const index = (key) => Math.max(0, steps.findIndex(([k]) => k === key));
   let states;
   let current = -1;
+  if (job.status === "review") {
+    states = steps.map(([k]) => (k === "publish" ? "warn" : "done"));
+    return { steps, states, fraction: (steps.length - 1) / steps.length };
+  }
   if (job.status === "queued") states = steps.map(() => "pending");
   else if (job.status === "skipped") states = steps.map(() => "skipped");
   else if (job.status === "succeeded") states = steps.map(() => "done");
@@ -434,7 +449,7 @@ function buildJobCard(job, previousPercent, isNew) {
   const { steps, states, fraction } = sequenceFor(job);
   const platforms = job.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ") || "—";
   const meta = [
-    job.source === "schedule" ? "⟲ theo lịch" : "▸ thủ công",
+    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại" }[job.source] || "▸ thủ công",
     job.dry_run ? "chạy thử" : platforms,
     formatTime(job.finished_at || job.started_at || job.created_at),
   ].join("  ·  ");
@@ -509,8 +524,10 @@ function announce(job, previous) {
     partial: ["warn", "PARTIAL SUCCESS", `Một số nền tảng đăng lỗi: ${job.topic}`],
     skipped: ["info", "MISSION SKIPPED", `Chủ đề đã đăng gần đây: ${job.topic}`],
     failed: ["bad", "MISSION FAILED", `${job.topic} — ${STAGES[job.failed_stage] || "lỗi"}`],
+    review: ["warn", "AWAITING REVIEW", `Video đã dựng xong, chờ bạn duyệt: ${job.topic}`],
   };
-  toast(...messages[job.status]);
+  const message = messages[job.status];
+  if (message) toast(...message);
   return true;
 }
 
@@ -544,23 +561,168 @@ function renderJobs(jobs) {
   });
 }
 
+function runBadge(status) {
+  const [label, tone] = RUN_STATUS[status] || [status, "neutral"];
+  return el("span", { class: `badge ${tone}`, text: label });
+}
+
+function runActions(run) {
+  const actions = [];
+  const live = run.publishes.filter((p) => !p.deleted_at);
+  if (run.status === "partial" || run.status === "failed") {
+    actions.push(el("button", { type: "button", class: "btn small", "data-action": "retry", "data-run": String(run.id),
+      title: "Đăng lại lên các nền tảng chưa thành công (nền tảng đã đăng sẽ được bỏ qua)", text: "↻ Đăng lại" }));
+  }
+  for (const p of live) {
+    actions.push(el("button", { type: "button", class: "btn small bad", "data-action": "takedown",
+      "data-run": String(run.id), "data-platform": p.platform, text: `Gỡ ${PLATFORM_LABELS[p.platform] || p.platform}` }));
+  }
+  return actions.length ? el("div", { class: "row-actions" }, actions) : el("span", { class: "muted", text: "—" });
+}
+
 function renderRuns(runs) {
   if (!changed("runs", runs)) return;
   const body = $("runs");
   if (!runs.length) {
-    body.replaceChildren(emptyRow(4, "// mission log trống — chưa có video nào"));
+    body.replaceChildren(emptyRow(5, "// mission log trống — chưa có video nào"));
     return;
   }
   body.replaceChildren(...runs.map((run) => {
     const fresh = !state.firstLoad && !state.seenRuns.has(run.id);
     state.seenRuns.add(run.id);
+    const live = run.publishes.filter((p) => !p.deleted_at);
+    const removed = run.publishes.filter((p) => p.deleted_at);
     return el("tr", { class: fresh ? "fresh" : "" }, [
       el("td", { class: "nowrap", "data-label": "Thời gian", text: formatTime(run.created_at) }),
-      el("td", { "data-label": "Tiêu đề", text: run.title }),
-      el("td", { "data-label": "Chủ đề", text: run.topic }),
-      el("td", { "data-label": "Đã đăng" }, publishLinks(run.publishes)),
+      el("td", { "data-label": "Tiêu đề" }, [el("div", { text: run.title }), el("div", { class: "muted", text: run.topic })]),
+      el("td", { "data-label": "Trạng thái" }, runBadge(run.status)),
+      el("td", { "data-label": "Đã đăng" }, [
+        publishLinks(live),
+        removed.length ? el("div", { class: "taken-down", text: `đã gỡ: ${removed.map((p) => PLATFORM_LABELS[p.platform] || p.platform).join(", ")}` }) : null,
+      ]),
+      el("td", { "data-label": "Thao tác" }, runActions(run)),
     ]);
   }));
+}
+
+// ---------- review queue ----------
+
+const mediaCache = new Map();
+
+/** Media needs the bearer token, which <img>/<video> cannot send — fetch it and use a blob URL. */
+async function authedMedia(path) {
+  if (!mediaCache.has(path)) {
+    mediaCache.set(path, (async () => {
+      const res = await fetch(path, { headers: { Authorization: `Bearer ${state.token}` } });
+      if (res.status === 401) throw new AuthError();
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return URL.createObjectURL(await res.blob());
+    })());
+  }
+  return mediaCache.get(path);
+}
+
+function buildReviewCard(run) {
+  const media = el("div", { class: "review-media" }, [
+    el("button", { type: "button", class: "play", "data-action": "play", "data-run": String(run.id),
+      "aria-label": "Xem video", text: "▶" }),
+  ]);
+  authedMedia(`/api/runs/${run.id}/thumbnail`).then((url) => {
+    media.prepend(el("img", { src: url, alt: "" }));
+  }).catch(() => { /* no thumbnail — the play button still works */ });
+
+  const ready = (state.config && state.config.platforms) || {};
+  const platforms = el("div", { class: "review-platforms" }, Object.keys(PLATFORM_LABELS).map((name) =>
+    el("label", { title: ready[name] && ready[name].note }, [
+      el("input", { type: "checkbox", name: `review-${run.id}`, value: name,
+        checked: run.platforms.includes(name), disabled: ready[name] && !ready[name].ready }),
+      el("span", { text: PLATFORM_LABELS[name] }),
+    ])));
+
+  return el("article", { class: "review-card", "data-run": String(run.id) }, [
+    media,
+    el("div", { class: "review-body" }, [
+      el("div", { class: "review-title", text: run.title }),
+      el("div", { class: "job-meta", text: `#${run.id} · ${run.topic} · ${formatTime(run.created_at)}` }),
+      platforms,
+      el("div", { class: "review-actions" }, [
+        el("button", { type: "button", class: "btn small ok", "data-action": "approve", "data-run": String(run.id), text: "✓ Duyệt & đăng" }),
+        el("button", { type: "button", class: "btn small bad", "data-action": "reject", "data-run": String(run.id), text: "✕ Từ chối" }),
+      ]),
+    ]),
+  ]);
+}
+
+function renderReviews(runs) {
+  const count = $("review-count");
+  count.textContent = String(runs.length);
+  count.classList.toggle("zero", runs.length === 0);
+  if (!changed("reviews", runs.map((r) => [r.id, r.platforms]))) return;
+  const box = $("reviews");
+  if (!runs.length) {
+    box.replaceChildren(el("div", { class: "empty-state", text: "// không có video nào đang chờ duyệt" }));
+    return;
+  }
+  box.replaceChildren(...runs.map(buildReviewCard));
+}
+
+async function runAction(button, request, success) {
+  button.disabled = true;
+  try {
+    await request();
+    if (success) toast(...success);
+    state.signatures.reviews = undefined;
+    state.signatures.runs = undefined;
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else toast("bad", "ACTION FAILED", err.message);
+    button.disabled = false;
+  }
+}
+
+async function onReviewClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const runId = button.dataset.run;
+  if (button.dataset.action === "play") {
+    const media = button.closest(".review-media");
+    try {
+      const url = await authedMedia(`/api/runs/${runId}/video`);
+      media.replaceChildren(el("video", { src: url, controls: true, autoplay: true, playsinline: true }));
+    } catch (err) {
+      toast("bad", "PREVIEW FAILED", err.message);
+    }
+    return;
+  }
+  if (button.dataset.action === "approve") {
+    const platforms = [...document.querySelectorAll(`input[name="review-${runId}"]:checked`)].map((i) => i.value);
+    if (!platforms.length) {
+      toast("warn", "CHỌN NỀN TẢNG", "Chọn ít nhất 1 nền tảng để đăng.");
+      return;
+    }
+    await runAction(button, () => api(`/api/runs/${runId}/approve`, { method: "POST", body: JSON.stringify({ platforms }) }),
+      ["info", "APPROVED", `Đang đăng video #${runId} lên ${platforms.map((p) => PLATFORM_LABELS[p]).join(", ")}`]);
+  } else if (button.dataset.action === "reject") {
+    if (!window.confirm(`Từ chối video #${runId}? Video sẽ không được đăng.`)) return;
+    await runAction(button, () => api(`/api/runs/${runId}/reject`, { method: "POST" }),
+      ["info", "REJECTED", `Đã từ chối video #${runId}`]);
+  }
+}
+
+async function onRunsClick(event) {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled) return;
+  const runId = button.dataset.run;
+  if (button.dataset.action === "retry") {
+    await runAction(button, () => api(`/api/runs/${runId}/publish`, { method: "POST", body: JSON.stringify({ platforms: [] }) }),
+      ["info", "RETRY", `Đang đăng lại video #${runId} lên các nền tảng còn thiếu`]);
+  } else if (button.dataset.action === "takedown") {
+    const label = PLATFORM_LABELS[button.dataset.platform] || button.dataset.platform;
+    if (!window.confirm(`Gỡ video #${runId} khỏi ${label}? Thao tác này xóa bài trên nền tảng.`)) return;
+    await runAction(button, () => api(`/api/runs/${runId}/takedown`, { method: "POST", body: JSON.stringify({ platform: button.dataset.platform }) }),
+      ["ok", "TAKEN DOWN", `Đã gỡ video #${runId} khỏi ${label}`]);
+  }
 }
 
 function renderErrors(errors) {
@@ -611,8 +773,9 @@ async function refresh() {
       renderConfig(await api("/api/config"));
       state.configLoaded = true;
     }
-    const [stats, runs, errors, jobList, schedule] = await Promise.all([
+    const [stats, runs, errors, jobList, schedule, reviews] = await Promise.all([
       api("/api/stats"), api("/api/runs"), api("/api/errors"), api("/api/jobs"), api("/api/schedule"),
+      api("/api/reviews"),
     ]);
     jobs = jobList;
     showApp();
@@ -621,6 +784,7 @@ async function refresh() {
     renderErrors(errors);
     renderJobs(jobs);
     renderSchedule(schedule);
+    renderReviews(reviews);
     state.firstLoad = false;
     $("updated-at").textContent = `telemetry synced ${new Date().toLocaleTimeString("vi-VN")}`;
   } catch (err) {
@@ -686,6 +850,8 @@ document.addEventListener("DOMContentLoaded", () => {
   startStarfield();
   loadToken();
   $("run-form").addEventListener("submit", submitRun);
+  $("reviews").addEventListener("click", onReviewClick);
+  $("runs").addEventListener("click", onRunsClick);
   $("jobs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-capcut]");
     if (button && !button.disabled) exportCapcut(button);

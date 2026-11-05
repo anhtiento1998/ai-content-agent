@@ -37,9 +37,20 @@ class Config:
     capcut_export: bool = False
     capcut_drafts_dir: str | None = None
 
+    require_approval: bool = True
+    max_posts_per_day: int = 3
+    ai_disclosure: bool = True
+    ai_disclosure_text: str = "Video có sử dụng AI"
+    schedule_timezone: str = "Asia/Ho_Chi_Minh"
+
     youtube_token_file: str = "youtube_token.json"
     youtube_client_secret_file: str = "client_secret.json"
+    youtube_privacy: str = "public"
     tiktok_access_token: str | None = None
+    tiktok_client_key: str | None = None
+    tiktok_client_secret: str | None = None
+    tiktok_refresh_token: str | None = None
+    tiktok_token_file: str = "tiktok_token.json"
     tiktok_privacy_level: str = "SELF_ONLY"
     facebook_page_id: str | None = None
     facebook_access_token: str | None = None
@@ -111,7 +122,13 @@ class Config:
                     if Path(self.youtube_client_secret_file).exists()
                     else None,
                 ),
-                "tiktok": entry(bool(self.tiktok_access_token)),
+                "tiktok": entry(
+                    bool(
+                        self.tiktok_access_token
+                        or (self.tiktok_client_key and self.tiktok_client_secret
+                            and (self.tiktok_refresh_token or Path(self.tiktok_token_file).exists()))
+                    )
+                ),
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
             },
         }

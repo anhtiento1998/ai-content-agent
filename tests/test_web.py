@@ -31,7 +31,7 @@ def env(tmp_path):
     history = HistoryStore(str(tmp_path / "history.db"))
     state = {"failing": set(), "factory_error": None, "studio_fail_stage": None}
 
-    def factory(platforms):
+    def factory(platforms, publish_only=False):
         if state["factory_error"]:
             raise state["factory_error"]
         return ContentPipeline(
@@ -232,7 +232,7 @@ class _StubCapCut:
 def _app_with_capcut(tmp_path, exporter):
     history = HistoryStore(str(tmp_path / "h.db"))
     jobs = JobManager(
-        lambda platforms: ContentPipeline(FakeStudio(str(tmp_path / "run" / "final.mp4")), [], history=history,
+        lambda platforms, publish_only=False: ContentPipeline(FakeStudio(str(tmp_path / "run" / "final.mp4")), [], history=history,
                                           make_thumbnails=False),
         history=history,
     )

@@ -9,6 +9,7 @@ dist/
 .env
 client_secret.json
 youtube_token.json
+tiktok_token.json
 output/
 data/
 .pytest_cache/
