@@ -24,6 +24,8 @@ dev = ["pytest>=8.0", "httpx>=0.27"]
 capcut = ["pycapcut>=0.0.4,<0.1"]
 # Word-level caption timing + pronunciation check from the narration audio (CAPTION_ALIGNER=whisper).
 align = ["faster-whisper>=1.0"]
+# Local Vietnamese TTS in-process (VOICE_PROVIDER=zerotts). VieNeu runs as its own server instead.
+zerotts = ["zerotts"]
 
 [project.scripts]
 ai-content-agent = "ai_content_agent.cli:main"

@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from ai_content_agent.export.capcut import CapCutExporter
+from ai_content_agent.export.capcut import CapCutExporter, CapCutRefused
+from ai_content_agent.export.edit_bundle import EditBundleExporter
 from ai_content_agent.history import FAILED, PARTIAL, PENDING, PUBLISHED, REJECTED, HistoryStore
 from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import ScriptResult, VideoResult
@@ -167,6 +168,9 @@ class ContentPipeline:
             try:
                 capcut_draft = str(self._capcut_exporter.export(Path(video.file_path).parent))
                 logger.info("CapCut draft written to %s", capcut_draft)
+            except CapCutRefused as exc:
+                logger.warning("CapCut draft refused (%s) — writing an edit bundle instead", exc)
+                capcut_draft = str(EditBundleExporter().export(Path(video.file_path).parent))
             except Exception as exc:
                 logger.exception("CapCut export failed — continuing without a draft")
                 self._record_error(topic, "capcut", exc)

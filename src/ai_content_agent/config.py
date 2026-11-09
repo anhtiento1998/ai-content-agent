@@ -7,6 +7,12 @@ from pathlib import Path
 from ai_content_agent.export.capcut import capcut_status
 
 
+def _installed(module: str) -> bool:
+    from importlib.util import find_spec
+
+    return find_spec(module) is not None
+
+
 @dataclass
 class Config:
     """Every field is read from the environment variable of the same name in upper case
@@ -25,6 +31,9 @@ class Config:
     visual_model: str | None = None
     voice_model: str | None = None
     voice_name: str | None = None
+    vieneu_base_url: str = "http://127.0.0.1:8000/v1"
+    vieneu_api_key: str | None = None
+    video_encoder: str = "auto"
 
     content_language: str = "vi"
     target_seconds: int = 40
@@ -47,6 +56,9 @@ class Config:
 
     capcut_export: bool = False
     capcut_drafts_dir: str | None = None
+    capcut_template: str = "auto"
+    capcut_version: str | None = None
+    capcut_force_write: bool = False
 
     require_approval: bool = True
     max_posts_per_day: int = 3
@@ -128,9 +140,12 @@ class Config:
             "voice_providers": {
                 "gpt": entry(openai),
                 "gemini": entry(google),
+                "vieneu": entry(True),  # reachability is checked when the first scene is voiced
+                "zerotts": entry(_installed("zerotts"), 'Chưa cài zerotts — chạy: pip install -e ".[zerotts]"'),
                 "silent": entry(True),
             },
-            "capcut": capcut_status(),
+            "capcut": capcut_status(self.capcut_drafts_dir, self.capcut_version),
+            "encoder": self._encoder_status(),
             "music": self._music_status(),
             "captions": {"style": self.caption_style, "aligner": self.caption_aligner, "font": self.subtitle_font},
             "platforms": {
@@ -145,6 +160,11 @@ class Config:
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
             },
         }
+
+    def _encoder_status(self) -> dict:
+        from ai_content_agent.media.encoders import status
+
+        return status(self.video_encoder)
 
     def _music_status(self) -> dict:
         from ai_content_agent.studio.provenance import MusicLibrary

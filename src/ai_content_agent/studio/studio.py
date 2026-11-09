@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from ai_content_agent.media import encoders
 from ai_content_agent.media.ffmpeg import wav_duration
 from ai_content_agent.providers.base import (
     ImageGenerator,
@@ -73,6 +74,7 @@ class StudioSettings:
     caption_style: str = "karaoke"
     ai_label: str | None = None  # text kept in a corner of the video, e.g. "Video có sử dụng AI"
     require_music_license: bool = True
+    video_encoder: str = "auto"  # auto | libx264 | h264_nvenc | h264_qsv | h264_amf
     scene_padding: float = 0.35
     max_workers: int = 4
     retry_attempts: int = 3
@@ -245,14 +247,16 @@ class VideoStudio:
 
         report("render", 0, 0)
         try:
+            encoder = encoders.detect(self._settings.video_encoder)
             durations = [round((d + self._settings.scene_padding) * render.FPS) / render.FPS for d in voice_durations]
             clips, audios = [], []
             for i, duration in enumerate(durations, 1):
                 clip, audio = f"scene_{i:02d}.mp4", f"scene_{i:02d}_audio.wav"
                 if is_video:
-                    render.video_to_clip(visual_files[i - 1], clip, duration, cwd=cwd)
+                    render.video_to_clip(visual_files[i - 1], clip, duration, cwd=cwd, encoder=encoder)
                 else:
-                    render.image_to_clip(visual_files[i - 1], clip, duration, zoom_in=i % 2 == 1, cwd=cwd)
+                    render.image_to_clip(visual_files[i - 1], clip, duration, zoom_in=i % 2 == 1, cwd=cwd,
+                                         encoder=encoder)
                 render.pad_audio(f"scene_{i:02d}_voice.wav", audio, duration, cwd=cwd)
                 clips.append(clip)
                 audios.append(audio)
@@ -284,6 +288,7 @@ class VideoStudio:
                 plan=plan.to_dict(), language=language, disclosure=settings.ai_label,
                 scenes=len(scenes), duration=total,
             )
+            provenance["encoder"] = encoder.name
             if scores:
                 provenance["pronunciation"] = {"scene_scores": scores, "min": min(scores)}
             (work / "provenance.json").write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -291,7 +296,7 @@ class VideoStudio:
             fonts = self._stage_fonts(work)
             render.compose_final(
                 "visuals.mp4", "voice.wav", "subtitles.ass", "final.mp4", total, cwd=cwd, music=music, logo=logo,
-                fontsdir=fonts, metadata=metadata_tags(provenance, storyboard.title),
+                fontsdir=fonts, metadata=metadata_tags(provenance, storyboard.title), encoder=encoder,
             )
         except Exception as exc:
             raise StudioStageError("render", f"{type(exc).__name__}: {exc}") from exc

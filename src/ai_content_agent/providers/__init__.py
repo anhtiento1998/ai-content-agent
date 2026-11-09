@@ -15,6 +15,7 @@ from .base import (
 )
 from .google_provider import GeminiProvider, GeminiVoiceProvider, ImagenProvider, VeoProvider
 from .local_provider import CardImageProvider, SilentVoiceProvider
+from .local_tts import VieNeuVoiceProvider, ZeroTTSVoiceProvider
 from .meta_muse_provider import MetaMuseVideoProvider, MuseSparkProvider
 from .openai_provider import OpenAIImageProvider, OpenAIProvider, OpenAIVoiceProvider
 
@@ -37,6 +38,8 @@ VISUAL_PROVIDERS = {
 VOICE_PROVIDERS = {
     "gpt": OpenAIVoiceProvider,
     "gemini": GeminiVoiceProvider,
+    "vieneu": VieNeuVoiceProvider,
+    "zerotts": ZeroTTSVoiceProvider,
     "silent": SilentVoiceProvider,
 }
 
@@ -59,6 +62,8 @@ __all__ = [
     "MetaMuseVideoProvider",
     "CardImageProvider",
     "SilentVoiceProvider",
+    "VieNeuVoiceProvider",
+    "ZeroTTSVoiceProvider",
     "TEXT_PROVIDERS",
     "VISUAL_PROVIDERS",
     "VOICE_PROVIDERS",

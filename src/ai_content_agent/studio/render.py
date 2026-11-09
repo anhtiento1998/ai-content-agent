@@ -9,15 +9,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ai_content_agent.media.encoders import ENCODERS, Encoder
 from ai_content_agent.media.ffmpeg import run_ffmpeg
 
 WIDTH, HEIGHT, FPS = 1080, 1920, 30
 _ZOOM = 0.12
-_X264 = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS)]
 _PCM = ["-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le"]
 
 
-def image_to_clip(image: str, out: str, duration: float, *, zoom_in: bool, cwd: str) -> None:
+def _video(encoder: Encoder | None, *, final: bool = False) -> list[str]:
+    return [*(encoder or ENCODERS["libx264"]).args(final=final), "-r", str(FPS)]
+
+
+def image_to_clip(
+    image: str, out: str, duration: float, *, zoom_in: bool, cwd: str, encoder: Encoder | None = None
+) -> None:
     """Slow Ken Burns zoom over a still. Upscaling 2x first avoids zoompan's sub-pixel jitter."""
 
     frames = max(1, round(duration * FPS))
@@ -27,15 +33,16 @@ def image_to_clip(image: str, out: str, duration: float, *, zoom_in: bool, cwd: 
         f"scale={WIDTH * 2}:{HEIGHT * 2}:force_original_aspect_ratio=increase,crop={WIDTH * 2}:{HEIGHT * 2},"
         f"zoompan=z='{zoom}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={WIDTH}x{HEIGHT}:fps={FPS}"
     )
-    run_ffmpeg(["-i", image, "-vf", vf, "-frames:v", str(frames), *_X264, "-an", out], cwd=cwd)
+    run_ffmpeg(["-i", image, "-vf", vf, "-frames:v", str(frames), *_video(encoder), "-an", out], cwd=cwd)
 
 
-def video_to_clip(video: str, out: str, duration: float, *, cwd: str) -> None:
+def video_to_clip(video: str, out: str, duration: float, *, cwd: str, encoder: Encoder | None = None) -> None:
     """Cover-crop to 9:16, loop if shorter than the narration, trim if longer, drop its audio."""
 
     vf = f"scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT}"
     run_ffmpeg(
-        ["-stream_loop", "-1", "-i", video, "-t", f"{duration:.3f}", "-vf", vf, *_X264, "-an", out], cwd=cwd
+        ["-stream_loop", "-1", "-i", video, "-t", f"{duration:.3f}", "-vf", vf, *_video(encoder), "-an", out],
+        cwd=cwd,
     )
 
 
@@ -65,6 +72,7 @@ def compose_final(
     logo: str | None = None,
     fontsdir: str | None = None,
     metadata: dict[str, str] | None = None,
+    encoder: Encoder | None = None,
 ) -> None:
     inputs = ["-i", visuals, "-i", voice]
     next_index = 2
@@ -98,7 +106,7 @@ def compose_final(
             "-filter_complex", ";".join(filters),
             "-map", f"[{video_label}]",
             "-map", f"[{audio_label}]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS),
+            *_video(encoder, final=True),
             "-c:a", "aac", "-b:a", "192k",
             "-t", f"{duration:.3f}",
             *[arg for key, value in (metadata or {}).items() for arg in ("-metadata", f"{key}={value}")],

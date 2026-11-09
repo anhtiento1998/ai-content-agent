@@ -18,7 +18,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
-from ai_content_agent.export.capcut import CapCutExporter
+from ai_content_agent.export.capcut import CapCutExporter, CapCutRefused
+from ai_content_agent.export.edit_bundle import EditBundleExporter
 from ai_content_agent.history import PENDING, REJECTED, HistoryStore
 from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchStore, batch_summary, parse_manifest
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
@@ -292,11 +293,29 @@ def create_app(
             raise HTTPException(status_code=501, detail="CapCut export is not available on this server")
         try:
             draft = str(capcut_exporter.export(Path(job["video_path"]).parent))
+        except CapCutRefused as exc:
+            raise HTTPException(status_code=409, detail=f"{exc} [bundle]") from exc
         except Exception as exc:
             history.record_error(job["topic"], "capcut", f"{type(exc).__name__}: {exc}")
             raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
         jobs.set_capcut_draft(job_id, draft)
         return {"draft": draft}
+
+    @api.post("/jobs/{job_id}/bundle")
+    def export_bundle(job_id: str) -> dict:
+        """FCPXML + SRT + media folder: works for every editor and CapCut version."""
+
+        job = jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not job["video_path"]:
+            raise HTTPException(status_code=409, detail="This job has no rendered video to export")
+        try:
+            bundle = str(EditBundleExporter().export(Path(job["video_path"]).parent))
+        except Exception as exc:
+            history.record_error(job["topic"], "capcut", f"{type(exc).__name__}: {exc}")
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}") from exc
+        return {"bundle": bundle}
 
     @api.get("/config")
     def config() -> dict:

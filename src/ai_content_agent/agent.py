@@ -59,7 +59,12 @@ class ContentAgent:
 
     def _build_voice_generator(self):
         c = self._config
-        credentials = {"gpt": {"api_key": c.openai_api_key}, "gemini": {"api_key": c.google_api_key}}
+        credentials = {
+            "gpt": {"api_key": c.openai_api_key},
+            "gemini": {"api_key": c.google_api_key},
+            "vieneu": {"base_url": c.vieneu_base_url, "api_key": c.vieneu_api_key},
+            "zerotts": {},
+        }
         return _build(
             "VOICE_PROVIDER", VOICE_PROVIDERS, c.voice_provider, credentials,
             {"model": c.voice_model, "voice": c.voice_name},
@@ -81,6 +86,7 @@ class ContentAgent:
                 caption_style=c.caption_style,
                 ai_label=c.ai_disclosure_text if c.ai_disclosure and c.ai_label_overlay else None,
                 require_music_license=c.require_music_license,
+                video_encoder=c.video_encoder,
                 keep_intermediates=c.keep_intermediates,
             ),
             aligner=build_aligner(c.caption_aligner, model=c.whisper_model, language=c.content_language),
@@ -157,5 +163,7 @@ class ContentAgent:
             require_music_license=c.require_music_license,
         )
 
-    def capcut_exporter(self) -> CapCutExporter:
-        return CapCutExporter(self._config.capcut_drafts_dir)
+    def capcut_exporter(self, *, force: bool | None = None) -> CapCutExporter:
+        c = self._config
+        return CapCutExporter(c.capcut_drafts_dir, template=c.capcut_template, version=c.capcut_version,
+                              force=c.capcut_force_write if force is None else force)

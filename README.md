@@ -81,7 +81,10 @@ xác nhận.
 | Hình ảnh — nền màu offline | `VISUAL_PROVIDER=card` — không cần API, để xem thử bố cục | có |
 | Hình ảnh — Muse Video (Meta) | **chưa có** — tính đến 10/2026 Meta chưa mở API. Chọn `muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền viết kịch bản trước) | — |
 | Giọng đọc — Gemini / GPT TTS | `VOICE_PROVIDER=gemini\|gpt`, chọn giọng qua `VOICE_NAME` | chưa (cần key) |
+| Giọng đọc — VieNeu-TTS (chạy trên máy) | `VOICE_PROVIDER=vieneu` — server cục bộ, 25 giọng Việt, không tốn phí | HTTP giả lập: có; server thật: chưa |
+| Giọng đọc — ZeroTTS (chạy trên máy) | `VOICE_PROVIDER=zerotts`, `pip install -e ".[zerotts]"` | giả lập: có; model thật: chưa |
 | Giọng đọc — không giọng | `VOICE_PROVIDER=silent` — video chỉ có phụ đề + nhạc | có |
+| Mã hoá video bằng GPU | `VIDEO_ENCODER=auto` tự dò NVENC / Quick Sync / AMF, không được thì dùng CPU | dò & lùi về CPU: có; GPU thật: chưa |
 | Dựng video (FFmpeg): zoom ảnh, ghép cảnh, phụ đề, nhạc, logo, chuẩn hóa âm lượng | luôn bật | có (dựng video thật trong test) |
 | Đăng YouTube | OAuth app (xem dưới) | HTTP giả lập: chưa; API thật: chưa |
 | Đăng TikTok | Content Posting API, tự chia chunk cho video > 64MB. **Trước khi TikTok audit app, bài chỉ đăng ở chế độ riêng tư** (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`) | HTTP giả lập: có; API thật: chưa |
@@ -95,6 +98,42 @@ xác nhận.
 — cần tạo API key và nạp credit ở trang developer của từng hãng. Một video
 40 giây ≈ 1 lần gọi kịch bản + 4–8 ảnh (hoặc 4–8 clip Veo) + 4–8 lần đọc
 giọng.
+
+## Giọng đọc chạy trên máy (miễn phí)
+
+**VieNeu-TTS v3 Turbo** — giọng Việt tự nhiên, chạy trên CPU (khoảng 0,5×
+thời gian thực trên Core i5 đời 12) hoặc GPU NVIDIA:
+
+```powershell
+pip install vieneu
+git clone https://github.com/pnnbao97/VieNeu-TTS
+cd VieNeu-TTS
+uv run python -m apps.openai_speech     # chạy server tại http://localhost:8000/v1
+```
+
+Rồi trong `.env`: `VOICE_PROVIDER=vieneu`, chọn giọng bằng `VOICE_NAME`
+(mặc định `Hải Đăng`; ví dụ `Mai Anh`, `Ngọc Huyền`, `Thùy Dung` giọng Nam,
+`Quang Sơn` giọng Trung). Server ở máy khác thì đặt `VIENEU_BASE_URL`, có
+khoá thì `VIENEU_API_KEY`. Xoay vòng nhiều giọng: `VOICE_NAMES=Hải Đăng,Mai
+Anh,Ngọc Huyền`.
+
+**ZeroTTS** — chạy ngay trong app, không cần server:
+`pip install -e ".[zerotts]"`, `VOICE_PROVIDER=zerotts`, `VOICE_NAME=maichi`.
+Lần đầu tải khoảng 900 MB model từ Hugging Face.
+
+Giấy phép: mã nguồn VieNeu là Apache-2.0, ZeroTTS là MIT. Thẻ model trên
+Hugging Face **chưa kiểm tra được** từ môi trường phát triển — nếu dùng thương
+mại, hãy đọc giấy phép của đúng bản model bạn tải (bản VieNeu 0.3B cũ là
+CC BY-NC, không dùng thương mại). App không đóng gói sẵn model nào.
+
+## Mã hoá video bằng GPU
+
+`VIDEO_ENCODER=auto` (mặc định) thử lần lượt NVIDIA NVENC, Intel Quick Sync,
+AMD AMF — mỗi bộ phải mã hoá thử thành công vài khung hình mới được chọn
+(nhiều bản FFmpeg liệt kê NVENC cả trên máy không có card NVIDIA). Không có
+GPU dùng được thì dùng `libx264` như cũ. Ép một bộ cụ thể:
+`VIDEO_ENCODER=h264_nvenc`; tắt GPU: `VIDEO_ENCODER=libx264`. Dashboard hiển
+thị bộ đang dùng; `provenance.json` ghi lại bộ đã mã hoá từng video.
 
 ## Phụ đề và tiếng Việt
 
@@ -363,6 +402,31 @@ pip install -e ".[capcut]"     # thư viện pycapcut (cộng đồng, không ch
 - Tự động sau mỗi lần dựng: đặt `CAPCUT_EXPORT=true` trong `.env` (lỗi
   xuất CapCut chỉ ghi vào log, không chặn việc đăng bài).
 
+**Chuẩn bị một lần cho CapCut 9.x** (bản mới đọc draft khác bản cũ):
+
+1. Mở CapCut, tạo **một project trống**, đặt tên ví dụ `Mẫu AI`, rồi **thoát
+   CapCut**.
+2. Trong `.env`: `CAPCUT_TEMPLATE=Mẫu AI` (mặc định `auto` = project gần
+   nhất do CapCut tạo).
+3. Kiểm tra: `ai-content-agent capcut --check` in ra phiên bản CapCut dò được
+   và CapCut có đang chạy không.
+
+Khi xuất, app sao chép "dấu phiên bản" và cách bố trí file
+(`draft_info.json` / `draft_content.json` / `template-2.tmp`) của project
+mẫu, tạo `draft_id` mới mỗi lần, không chép thư mục `Timelines/` (CapCut tự
+dựng lại khi mở), đếm độ dài chữ theo UTF-16 như CapCut, sao lưu
+`root_meta_info.json` trước khi đăng ký project mới. App **từ chối ghi** khi
+CapCut đang chạy, hoặc khi CapCut là bản **10.x trở lên** (bản 10 báo draft do
+công cụ tạo là "nội dung bị hỏng") — khi đó dùng *Gói dựng* bên dưới, hoặc
+ép bằng `--force` / `CAPCUT_FORCE_WRITE=true`.
+
+**Gói dựng (mọi phiên bản, mọi phần mềm):** nút **▤ Gói dựng** trên
+dashboard hoặc `ai-content-agent capcut --bundle` tạo thư mục `edit_bundle/`
+gồm file **FCPXML** (mở bằng DaVinci Resolve, Final Cut Pro), `captions.srt`,
+thư mục `media/` và `README.txt` liệt kê chữ hook từng cảnh. Với CapCut bản
+nào cũng được: nhập media + file SRT. Khi xuất tự động mà CapCut từ chối, app
+tự tạo gói dựng thay thế.
+
 Project được ghi vào thư mục nháp của CapCut trên Windows
 (`%LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft`, đổi bằng
 `CAPCUT_DRAFTS_DIR`). **Đóng CapCut trước khi xuất**, mở lại để thấy project.
@@ -371,9 +435,11 @@ xóa/di chuyển thư mục đó khi còn chỉnh trong CapCut.
 
 **Lưu ý quan trọng:** CapCut không có API hay định dạng project chính thức.
 Bộ xuất dùng `pycapcut` (định dạng do cộng đồng phân tích ngược, chỉ hỗ trợ
-**CapCut bản quốc tế**, không phải JianYing) và mới được kiểm tra trên bản
-giả lập mô phỏng đúng các ràng buộc của pycapcut — **chưa mở thử trong
-CapCut thật**. Phiên bản CapCut mới có thể thay đổi định dạng.
+**CapCut bản quốc tế**, không phải JianYing; thư viện **không có file giấy
+phép** nên app không đóng gói nó — bạn tự cài) và cách gia cố cho 9.x theo
+ma trận phiên bản của [capcut-cli](https://github.com/renezander030/capcut-cli/blob/master/docs/version-support.md)
+(MIT). Mới được kiểm tra trên bản giả lập — **chưa mở thử trong CapCut
+thật**. Nếu mở được/không mở được, cho biết phiên bản CapCut để cập nhật.
 
 Nếu project nháp không mở được, mọi thứ để dựng lại tay đã có sẵn trong thư
 mục lần chạy: `scene_01_visual.*`, `scene_01_voice.wav`, … theo thứ tự,
@@ -499,7 +565,8 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] Tập trung 3 nền tảng YouTube, TikTok, Facebook (đã bỏ Instagram).
 - [x] **Bước 1 — Studio tự động:** kịch bản chia cảnh, hình/clip + giọng
       đọc mỗi cảnh, phụ đề, nhạc nền, logo, xuất MP4.
-- [ ] **Bước 2 — App desktop Windows** (file cài `.exe`).
+- [ ] **Bước 2 — App desktop Windows** (file cài `.exe`) — tạm hoãn theo yêu cầu, bạn tự đóng gói khi cần.
+- [x] P2: CapCut 9.x (dò phiên bản, khuôn từ app, chặn 10.x), gói dựng FCPXML, TTS tiếng Việt chạy trên máy, tự dò NVENC.
 - [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
 - [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).
 - [ ] Xem trước video + sửa kịch bản từng cảnh ngay trên dashboard trước

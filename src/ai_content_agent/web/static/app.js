@@ -523,14 +523,39 @@ function capcutButton(job) {
   if (!job.video_path) return null;
   const status = state.config && state.config.capcut;
   const ready = Boolean(status && status.ready);
-  return el("div", { class: "job-actions" }, el("button", {
-    type: "button",
-    class: "btn small",
-    "data-capcut": job.id,
-    disabled: !ready,
-    title: ready ? "Tạo project nháp để mở và chỉnh tay trong CapCut desktop" : status && status.note,
-    text: job.capcut_draft ? "⇪ Xuất lại CapCut" : "⇪ Xuất CapCut",
-  }));
+  const version = status && status.version ? ` (CapCut ${status.version})` : "";
+  return el("div", { class: "job-actions" }, [
+    el("button", {
+      type: "button",
+      class: "btn small",
+      "data-capcut": job.id,
+      disabled: !ready,
+      title: ready ? `Tạo project nháp để mở và chỉnh tay trong CapCut desktop${version}` : status && status.note,
+      text: job.capcut_draft ? "⇪ Xuất lại CapCut" : "⇪ Xuất CapCut",
+    }),
+    el("button", {
+      type: "button",
+      class: "btn small",
+      "data-bundle": job.id,
+      title: "FCPXML + phụ đề SRT + media: mở bằng DaVinci Resolve / Final Cut, hoặc nhập SRT + media vào CapCut bản nào cũng được",
+      text: "▤ Gói dựng",
+    }),
+  ]);
+}
+
+async function exportBundle(button) {
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    const { bundle } = await api(`/api/jobs/${encodeURIComponent(button.dataset.bundle)}/bundle`, { method: "POST" });
+    toast("ok", "EDIT BUNDLE READY", `FCPXML + SRT + media: ${bundle}`);
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else toast("bad", "BUNDLE EXPORT FAILED", err.message);
+  } finally {
+    button.disabled = false;
+    button.classList.remove("busy");
+  }
 }
 
 async function exportCapcut(button) {
@@ -542,7 +567,14 @@ async function exportCapcut(button) {
     await refresh();
   } catch (err) {
     if (err instanceof AuthError) showAuth(true);
-    else toast("bad", "CAPCUT EXPORT FAILED", err.message);
+    else if (err.message.endsWith("[bundle]")) {
+      const reason = err.message.replace(/ \[bundle\]$/, "");
+      toast("warn", "CAPCUT REFUSED", reason);
+      if (window.confirm(`${reason}\n\nXuất "Gói dựng" (FCPXML + SRT + media) thay thế?`)) {
+        const bundleButton = button.parentElement.querySelector("button[data-bundle]");
+        if (bundleButton) await exportBundle(bundleButton);
+      }
+    } else toast("bad", "CAPCUT EXPORT FAILED", err.message);
     button.disabled = false;
   } finally {
     button.classList.remove("busy");
@@ -1026,6 +1058,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("jobs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-capcut]");
     if (button && !button.disabled) exportCapcut(button);
+    const bundle = event.target.closest("button[data-bundle]");
+    if (bundle && !bundle.disabled) exportBundle(bundle);
   });
   $("auth-form").addEventListener("submit", submitAuth);
   window.addEventListener("hashchange", () => {

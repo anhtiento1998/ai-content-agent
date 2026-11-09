@@ -89,6 +89,11 @@ def main() -> None:
     capcut_p = sub.add_parser("capcut", help="Export a rendered run as an editable CapCut desktop draft")
     capcut_p.add_argument("work_dir", nargs="?", help="Run folder under OUTPUT_DIR (default: the latest run)")
     capcut_p.add_argument("--drafts-dir", help="CapCut draft folder (default: CapCut's own, or CAPCUT_DRAFTS_DIR)")
+    capcut_p.add_argument("--bundle", action="store_true",
+                          help="Write an edit bundle (FCPXML + SRT + media) instead — any editor, any CapCut version")
+    capcut_p.add_argument("--check", action="store_true", help="Show the detected CapCut version and exit")
+    capcut_p.add_argument("--force", action="store_true",
+                          help="Write even if CapCut is running or newer than 9.x (may corrupt nothing, but may not open)")
 
     dash_p = sub.add_parser("dashboard", help="Start the web dashboard")
     dash_p.add_argument("--host", default="127.0.0.1")
@@ -164,8 +169,18 @@ def main() -> None:
         _review_commands(args, agent, config)
 
     elif args.command == "capcut":
-        from ai_content_agent.export.capcut import CapCutExporter
+        from ai_content_agent.export.capcut import CapCutExporter, CapCutRefused
+        from ai_content_agent.export.edit_bundle import EditBundleExporter
 
+        exporter = CapCutExporter(args.drafts_dir or config.capcut_drafts_dir, template=config.capcut_template,
+                                  version=config.capcut_version, force=args.force or config.capcut_force_write)
+        if args.check:
+            info = exporter.check()
+            print(f"CapCut store: {info['store']}")
+            print(f"Version: {info['version'] or 'unknown'} ({info['version_source']})"
+                  f"{'' if info['supported'] else ' — NOT supported for drafts, use --bundle'}")
+            print(f"CapCut running: {'yes — quit it before exporting' if info['running'] else 'no'}")
+            return
         if args.work_dir:
             work_dir = Path(args.work_dir)
         else:
@@ -173,8 +188,14 @@ def main() -> None:
             if not runs:
                 sys.exit(f"No exportable runs in {config.output_dir} — render one with `ai-content-agent run ... --dry-run`")
             work_dir = runs[-1].parent
+        if args.bundle:
+            print(f"Edit bundle: {EditBundleExporter().export(work_dir)}")
+            print("Open the .fcpxml in DaVinci Resolve / Final Cut; import captions.srt + media/ into CapCut.")
+            return
         try:
-            draft = CapCutExporter(args.drafts_dir or config.capcut_drafts_dir).export(work_dir)
+            draft = exporter.export(work_dir)
+        except CapCutRefused as exc:
+            sys.exit(f"CapCut export refused: {exc}\nUse `ai-content-agent capcut --bundle` for an FCPXML + SRT bundle.")
         except (RuntimeError, FileNotFoundError) as exc:
             sys.exit(f"CapCut export failed: {exc}")
         print(f"CapCut draft: {draft}")
