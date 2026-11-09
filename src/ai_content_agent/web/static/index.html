@@ -122,6 +122,28 @@
       <div class="reviews" id="reviews"></div>
     </section>
 
+    <section class="panel batch-panel" id="batch-panel">
+      <div class="panel-title"><span class="dot"></span>FLEET FACTORY · sản xuất hàng loạt</div>
+      <h2>Xưởng hàng loạt</h2>
+      <form id="batch-form" class="batch-form" novalidate>
+        <label class="field">
+          <span class="mono label">&gt; danh_sách_chủ_đề <small>(mỗi dòng 1 chủ đề, hoặc JSONL)</small></span>
+          <textarea id="batch-manifest" rows="5" maxlength="200000" spellcheck="false"
+            placeholder="5 mẹo tiết kiệm điện mùa hè&#10;Cách chọn dưa hấu ngọt&#10;{&quot;topic&quot;: &quot;Mẹo ngủ ngon&quot;, &quot;style&quot;: &quot;nhẹ nhàng&quot;, &quot;platforms&quot;: [&quot;youtube&quot;]}"></textarea>
+        </label>
+        <div class="batch-row">
+          <label class="field grow">
+            <span class="mono label">&gt; tên_lô <small>(tuỳ chọn)</small></span>
+            <input type="text" id="batch-name" maxlength="120" placeholder="VD: Mẹo nhà cửa tuần 46">
+          </label>
+          <button type="submit" class="btn primary" id="batch-submit">Tạo lô</button>
+        </div>
+        <p class="muted small-note">Dùng nền tảng và phong cách đang chọn ở LAUNCH PAD. Lô chạy từng video một, xen kẽ với việc khác; tắt app giữa chừng thì lần mở sau chạy tiếp, không mất kịch bản và cảnh đã tạo.</p>
+        <p class="form-error" id="batch-error" hidden></p>
+      </form>
+      <div class="batches" id="batches"></div>
+    </section>
+
     <section class="panel">
       <div class="panel-title"><span class="dot"></span>MISSION LOG</div>
       <h2>Lịch sử</h2>

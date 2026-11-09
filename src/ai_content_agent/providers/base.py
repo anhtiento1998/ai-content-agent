@@ -87,5 +87,6 @@ class VoiceGenerator(ABC):
     name: str
 
     @abstractmethod
-    def synthesize(self, text: str, out_path: str) -> None:
-        """Write speech for `text` to `out_path` as a WAV file."""
+    def synthesize(self, text: str, out_path: str, *, voice: str | None = None) -> None:
+        """Write speech for `text` to `out_path` as a WAV file. `voice` overrides the configured
+        voice for this call (the variation engine rotates VOICE_NAMES)."""

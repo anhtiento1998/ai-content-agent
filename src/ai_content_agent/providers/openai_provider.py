@@ -59,10 +59,10 @@ class OpenAIVoiceProvider(VoiceGenerator):
         self._voice = voice
         self._instructions = instructions
 
-    def synthesize(self, text: str, out_path: str) -> None:
+    def synthesize(self, text: str, out_path: str, *, voice: str | None = None) -> None:
         with self._client.audio.speech.with_streaming_response.create(
             model=self._model,
-            voice=self._voice,
+            voice=voice or self._voice,
             input=text,
             instructions=self._instructions,
             response_format="wav",

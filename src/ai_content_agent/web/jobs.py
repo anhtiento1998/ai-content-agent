@@ -1,9 +1,10 @@
-"""Background job runner for dashboard-triggered and scheduled pipeline runs.
+"""Background job runner for dashboard-triggered, scheduled and batch pipeline runs.
 
-Two kinds of job share one worker thread: "produce" (render a topic, then
-queue it for review or publish it) and "publish" (approve or retry an
-already-rendered run). Serialising keeps API spend and quota predictable.
-Job state lives in memory only; durable results are in HistoryStore.
+Three kinds of job share one worker thread: "produce" (render a topic, then
+queue it for review or publish it), "publish" (approve or retry an
+already-rendered run) and "batch" (one item of a durable batch, fed by
+BatchWorker). Serialising keeps API spend and quota predictable. Job state
+lives in memory only; durable results are in HistoryStore and BatchStore.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from ai_content_agent.history import HistoryStore
+from ai_content_agent.pipeline.batch import BatchItem, BatchRunner
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline, RunOutcome
 from ai_content_agent.studio import StudioStageError
 
@@ -56,14 +58,22 @@ class Job:
     stage_total: int = 0
     capcut_draft: str | None = None
     actor: str | None = None
+    batch_id: int | None = None
 
 
 class JobManager:
     def __init__(
-        self, pipeline_factory: PipelineFactory, *, history: HistoryStore | None = None, max_jobs: int = 100
+        self,
+        pipeline_factory: PipelineFactory,
+        *,
+        history: HistoryStore | None = None,
+        max_jobs: int = 100,
+        batch_runner: BatchRunner | None = None,
     ) -> None:
         self._factory = pipeline_factory
         self._history = history
+        self._batch_runner = batch_runner
+        self._batch_items: dict[str, BatchItem] = {}
         self._max_jobs = max_jobs
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="content-job")
         self._jobs: OrderedDict[str, Job] = OrderedDict()
@@ -103,6 +113,20 @@ class JobManager:
             force=False, source=source, kind="publish", run_id=run_id, actor=actor,
         ))
 
+    def submit_batch_item(self, item: BatchItem) -> Job:
+        if self._batch_runner is None:
+            raise RuntimeError("This job manager has no batch runner")
+        job = Job(
+            id=uuid.uuid4().hex[:12], topic=item.topic, platforms=self._batch_runner.platforms_for(item),
+            style=item.style, dry_run=False, force=item.force, source="batch", kind="batch", batch_id=item.batch_id,
+        )
+        self._batch_items[job.id] = item
+        return self._enqueue(job)
+
+    def busy(self) -> bool:
+        with self._lock:
+            return any(job.status in ("queued", "running") for job in self._jobs.values())
+
     def _evict_finished(self) -> None:
         for job_id in [j.id for j in self._jobs.values() if j.status in _TERMINAL]:
             if len(self._jobs) <= self._max_jobs:
@@ -118,6 +142,9 @@ class JobManager:
             job.stage, job.stage_done, job.stage_total = stage, done, total
 
         try:
+            if job.kind == "batch":
+                self._finish(job, self._batch_runner.process(self._batch_items.pop(job.id), progress=progress))
+                return
             try:
                 pipeline = self._factory(job.platforms, publish_only=job.kind == "publish")
             except Exception as exc:
@@ -194,3 +221,43 @@ class JobManager:
 
     def shutdown(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+class BatchWorker:
+    """Feeds runnable batch items to the job manager one at a time, while the dashboard runs.
+    Manual and scheduled jobs queued meanwhile run between batch items."""
+
+    def __init__(self, jobs: JobManager, runner: BatchRunner, *, poll_seconds: float = 3.0) -> None:
+        self._jobs, self._runner, self._poll = jobs, runner, poll_seconds
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="batch-worker", daemon=True)
+
+    def start(self) -> "BatchWorker":
+        self._runner.store.recover()
+        self._thread.start()
+        return self
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self._poll):
+            try:
+                self.step()
+            except Exception:
+                logger.exception("Batch worker step failed")
+
+    def step(self, *, timeout: float | None = None) -> bool:
+        """Run one batch item if one is runnable and no other job is waiting. True if one ran."""
+
+        if self._jobs.busy() or not self._runner.store.has_runnable():
+            return False
+        item = self._runner.store.claim_next()
+        if item is None:
+            return False
+        job = self._jobs.submit_batch_item(item)
+        try:
+            self._jobs.wait(job.id, timeout=timeout)
+        except Exception:
+            pass  # recorded on the job and the batch item
+        return True
+
+    def stop(self) -> None:
+        self._stop.set()

@@ -9,9 +9,10 @@ import secrets
 from ai_content_agent.agent import ContentAgent
 from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
+from ai_content_agent.pipeline.batch import BatchRunner, BatchStore
 from ai_content_agent.pipeline.scheduler import ALL_TOPICS_USED, TopicRotation, start_background
 from ai_content_agent.web.app import ScheduleInfo, create_app
-from ai_content_agent.web.jobs import JobManager
+from ai_content_agent.web.jobs import BatchWorker, JobManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,10 @@ def serve(
 
     agent = ContentAgent(config)
     history = HistoryStore(config.history_db_path)
-    jobs = JobManager(agent.build_pipeline, history=history)
+    batches = BatchStore(config.history_db_path)
+    runner = BatchRunner(batches, agent.build_pipeline)
+    jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner)
+    batch_worker = BatchWorker(jobs, runner).start()
 
     schedule = None
     if cron:
@@ -76,6 +80,7 @@ def serve(
         schedule=schedule,
         capcut_exporter=agent.capcut_exporter(),
         pipeline_factory=agent.build_pipeline,
+        batches=batches,
     )
 
     if not _is_loopback(host):
@@ -93,6 +98,7 @@ def serve(
     try:
         uvicorn.run(app, host=host, port=port, log_level="info")
     finally:
+        batch_worker.stop()
         jobs.shutdown()
         if schedule:
             schedule.scheduler.shutdown(wait=False)

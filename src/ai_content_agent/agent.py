@@ -22,6 +22,8 @@ from ai_content_agent.publishers import (
 )
 from ai_content_agent.publishers.base import Publisher
 from ai_content_agent.studio import StudioSettings, VideoStudio
+from ai_content_agent.studio.align import build_aligner
+from ai_content_agent.studio.variation import Variator
 
 
 def _build(kind: str, registry: dict, name: str, credentials: dict, overrides: dict):
@@ -76,8 +78,22 @@ class ContentAgent:
                 music_dir=c.music_dir,
                 logo_path=c.brand_logo_path,
                 font=c.subtitle_font,
+                caption_style=c.caption_style,
+                ai_label=c.ai_disclosure_text if c.ai_disclosure and c.ai_label_overlay else None,
+                require_music_license=c.require_music_license,
                 keep_intermediates=c.keep_intermediates,
             ),
+            aligner=build_aligner(c.caption_aligner, model=c.whisper_model, language=c.content_language),
+        )
+
+    def build_variator(self) -> Variator | None:
+        c = self._config
+        if not c.variation:
+            return None
+        return Variator(
+            hooks=Config.split_list(c.hook_styles) or None,
+            visual_styles=Config.split_list(c.visual_styles) or None,
+            voices=Config.split_list(c.voice_names),
         )
 
     def build_publishers(self, platforms: list[str]) -> list[Publisher]:
@@ -136,6 +152,9 @@ class ContentAgent:
             capcut_exporter=self.capcut_exporter() if c.capcut_export and not publish_only else None,
             require_approval=c.require_approval,
             max_posts_per_day=c.max_posts_per_day,
+            variator=None if publish_only else self.build_variator(),
+            similarity_threshold=max(0, c.similarity_threshold) / 100,
+            require_music_license=c.require_music_license,
         )
 
     def capcut_exporter(self) -> CapCutExporter:

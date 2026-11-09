@@ -53,7 +53,7 @@ class SilentVoiceProvider(VoiceGenerator):
     _WORDS_PER_SECOND = 2.6
     _RATE = 24000
 
-    def synthesize(self, text: str, out_path: str) -> None:
+    def synthesize(self, text: str, out_path: str, *, voice: str | None = None) -> None:
         seconds = max(1.5, len(text.split()) / self._WORDS_PER_SECOND)
         with wave.open(out_path, "wb") as wav:
             wav.setnchannels(1)

@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import PENDING, REJECTED, HistoryStore
+from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchStore, batch_summary, parse_manifest
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.pipeline.scheduler import TopicRotation
 from ai_content_agent.publishers import PUBLISHERS
@@ -53,6 +54,13 @@ class RunRequest(BaseModel):
             raise ValueError("choose at least one platform, or enable dry_run")
         self.platforms = list(dict.fromkeys(self.platforms))
         return self
+
+
+class BatchRequest(BaseModel):
+    name: str = Field("", max_length=120)
+    manifest: str = Field(min_length=1, max_length=200_000)
+    platforms: list[Platform] = Field(default_factory=list)
+    style: str = Field("", max_length=300)
 
 
 class ReviewerMixin(BaseModel):
@@ -94,6 +102,7 @@ def create_app(
     schedule: ScheduleInfo | None = None,
     capcut_exporter: CapCutExporter | None = None,
     pipeline_factory: Callable[..., ContentPipeline] | None = None,
+    batches: BatchStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Content Agent", docs_url=None, redoc_url=None, openapi_url=None)
     expected = token.encode()
@@ -199,6 +208,62 @@ def create_app(
                                  platform=body.platform)
             raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
         return {"status": "taken_down", "platform": body.platform}
+
+    def _batches() -> BatchStore:
+        if batches is None:
+            raise HTTPException(status_code=501, detail="Batch production is not available on this server")
+        return batches
+
+    @api.get("/batches")
+    def list_batches(limit: int = Query(10, ge=1, le=50)) -> list[dict]:
+        return [batch_summary(b) for b in _batches().list(limit=limit)]
+
+    @api.post("/batches", status_code=201)
+    def create_batch(body: BatchRequest) -> dict:
+        store = _batches()
+        try:
+            items = parse_manifest(body.manifest)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Manifest: {exc}") from exc
+        if not items:
+            raise HTTPException(status_code=422, detail="Manifest has no topics")
+        if not body.platforms and any(item.platforms is None for item in items):
+            raise HTTPException(status_code=422, detail="choose at least one platform (or set platforms per item)")
+        allowed = set(PUBLISHERS)
+        for item in items:
+            unknown = set(item.platforms or []) - allowed
+            if unknown:
+                raise HTTPException(status_code=422, detail=f"Unknown platform(s) {sorted(unknown)} for {item.topic!r}")
+            if body.style and not item.style:
+                item.style = body.style
+        batch_id = store.create(body.name.strip(), list(dict.fromkeys(body.platforms)), items)
+        return batch_summary(store.get(batch_id))
+
+    def _batch_or_404(batch_id: int):
+        batch = _batches().get(batch_id, with_items=False)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        return batch
+
+    @api.post("/batches/{batch_id}/pause")
+    def pause_batch(batch_id: int) -> dict:
+        batch = _batch_or_404(batch_id)
+        if batch.status == ACTIVE:
+            _batches().set_status(batch_id, PAUSED)
+        return batch_summary(_batches().get(batch_id))
+
+    @api.post("/batches/{batch_id}/resume")
+    def resume_batch(batch_id: int) -> dict:
+        batch = _batch_or_404(batch_id)
+        if batch.status == PAUSED:
+            _batches().set_status(batch_id, ACTIVE)
+        return batch_summary(_batches().get(batch_id))
+
+    @api.post("/batches/{batch_id}/retry")
+    def retry_batch(batch_id: int) -> dict:
+        _batch_or_404(batch_id)
+        _batches().retry_failed(batch_id)
+        return batch_summary(_batches().get(batch_id))
 
     @api.get("/errors")
     def errors(limit: int = Query(20, ge=1, le=200)) -> list[dict]:

@@ -1,19 +1,36 @@
 """Burned-in captions as an ASS subtitle file (rendered by ffmpeg's libass).
 
-Timing is estimated: each scene's narration is split into short chunks and
-the scene's measured voice duration is shared out by chunk length. It is
-not word-level forced alignment, but stays in sync per scene because every
-scene starts its captions exactly when its voice-over starts.
+Every word gets its own time span. By default the spans are estimated: the
+scene's measured voice duration is shared out by how many syllables each
+word takes to *say* (so "2026" counts as seven, a comma adds a short pause).
+With a word aligner (studio/align.py, Whisper) they come from the audio.
+Either way each scene starts its captions exactly when its voice-over starts.
+
+Style "karaoke" (default) shows a short line and fills each word with the
+highlight colour as it is spoken (ASS \\kf); "phrase" shows plain lines.
+An optional label (e.g. "Video có sử dụng AI") stays in a corner throughout.
 """
 
 from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from ai_content_agent.studio.vi_text import nfc, syllables
+
+CAPTION_STYLES = ("karaoke", "phrase")
+_PAUSE = {",": 0.6, ";": 0.8, ":": 0.8, ".": 1.2, "!": 1.2, "?": 1.2, "…": 1.4}
 
 _PHRASE_BREAK = re.compile(r"(?<=[.,!?;:…])\s+")
 _SENTENCE_END = re.compile(r"[.!?…]$")
+
+
+@dataclass
+class TimedWord:
+    text: str
+    start: float
+    end: float
 
 
 @dataclass
@@ -21,6 +38,7 @@ class Caption:
     start: float
     end: float
     text: str
+    words: list[TimedWord] = field(default_factory=list)
 
 
 def _fits(text: str, max_chars: int, max_words: int) -> bool:
@@ -47,6 +65,37 @@ def split_into_chunks(text: str, *, max_chars: int = 28, max_words: int = 7) -> 
         bounds = [round(i * len(words) / parts) for i in range(parts + 1)]
         chunks += [" ".join(words[a:b]) for a, b in zip(bounds, bounds[1:]) if b > a]
     return chunks
+
+
+def estimate_word_times(words: list[str], spoken: list[str], start: float, duration: float) -> list[TimedWord]:
+    """Share `duration` across `words` by the syllables of their spoken form plus punctuation pauses."""
+
+    weights = []
+    for word, said in zip(words, spoken):
+        stripped = word.rstrip("\"'”’)]")
+        weights.append(syllables(said) + _PAUSE.get(stripped[-1:], 0.0) if stripped else 1.0)
+    total = sum(weights) or 1.0
+    timed, cursor = [], start
+    for word, weight in zip(words, weights):
+        end = cursor + duration * weight / total
+        timed.append(TimedWord(word, cursor, end))
+        cursor = end
+    if timed:
+        timed[-1].end = start + duration
+    return timed
+
+
+def group_into_captions(chunks: list[str], timed: list[TimedWord]) -> list[Caption]:
+    """Caption lines from `chunks` (made of the same words, in order, as `timed`)."""
+
+    captions, index = [], 0
+    for chunk in chunks:
+        count = len(chunk.split())
+        words = timed[index:index + count]
+        index += count
+        if words:
+            captions.append(Caption(words[0].start, words[-1].end, chunk, words))
+    return captions
 
 
 def time_captions(chunks: list[str], start: float, duration: float) -> list[Caption]:
@@ -93,11 +142,35 @@ def _ass_escape(text: str) -> str:
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
+def _karaoke_text(cap: Caption) -> str:
+    """Each word fills from white to the highlight colour over its own span (\\kf, centiseconds)."""
+
+    parts, previous_end = [], cap.start
+    for word in cap.words:
+        centis = max(1, round((word.end - previous_end) * 100))
+        parts.append(f"{{\\kf{centis}}}{_ass_escape(word.text)}")
+        previous_end = word.end
+    return " ".join(parts)
+
+
 def build_ass(
-    captions: list[Caption], hooks: list[Caption], *, font: str = "Arial", width: int = 1080, height: int = 1920
+    captions: list[Caption],
+    hooks: list[Caption],
+    *,
+    font: str = "Arial",
+    width: int = 1080,
+    height: int = 1920,
+    style: str = "karaoke",
+    label: str | None = None,
+    duration: float | None = None,
 ) -> str:
-    # Colours are &HAABBGGRR. Caption: white with black outline, low in frame but
-    # above the TikTok/Shorts UI. Hook: yellow, top of frame.
+    # Colours are &HAABBGGRR. Caption: low in frame but above the TikTok/Shorts UI; in karaoke
+    # style words start white (secondary) and fill yellow (primary) as they are spoken.
+    # Hook: yellow, top of frame. Label: small, translucent, top-left corner.
+    if style not in CAPTION_STYLES:
+        raise ValueError(f"CAPTION_STYLE must be one of {', '.join(CAPTION_STYLES)}, got {style!r}")
+    karaoke = style == "karaoke"
+    primary, secondary = ("&H0000E5FF", "&H00FFFFFF") if karaoke else ("&H00FFFFFF", "&H000000FF")
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -110,22 +183,28 @@ def build_ass(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Caption,{font},70,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,"
+        f"Style: Caption,{font},70,{primary},{secondary},&H00000000,&H64000000,"
         "-1,0,0,0,100,100,0,0,1,6,0,2,90,90,440,1",
         f"Style: Hook,{font},86,&H0000E5FF,&H000000FF,&H00000000,&H64000000,"
         "-1,0,0,0,100,100,0,0,1,7,0,8,90,90,300,1",
+        f"Style: Label,{font},34,&H40FFFFFF,&H000000FF,&H80000000,&H00000000,"
+        "-1,0,0,0,100,100,0,0,1,2,0,7,48,48,72,1",
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
+    if label:
+        end = duration if duration is not None else max([c.end for c in captions + hooks] or [0.0])
+        lines.append(f"Dialogue: 2,{_ass_time(0)},{_ass_time(end)},Label,,0,0,0,,{_ass_escape(nfc(label))}")
     for hook in hooks:
         lines.append(
             f"Dialogue: 1,{_ass_time(hook.start)},{_ass_time(hook.end)},Hook,,0,0,0,,"
             f"{{\\fad(200,150)}}{_ass_escape(hook.text)}"
         )
     for cap in captions:
+        text = _karaoke_text(cap) if karaoke and cap.words else _ass_escape(cap.text)
         lines.append(
             f"Dialogue: 0,{_ass_time(cap.start)},{_ass_time(cap.end)},Caption,,0,0,0,,"
-            f"{{\\fscx88\\fscy88\\t(0,110,\\fscx100\\fscy100)}}{_ass_escape(cap.text)}"
+            f"{{\\fscx88\\fscy88\\t(0,110,\\fscx100\\fscy100)}}{text}"
         )
     return "\n".join(lines) + "\n"

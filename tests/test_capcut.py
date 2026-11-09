@@ -70,6 +70,7 @@ def test_export_rebuilds_the_edit_as_editable_tracks(tmp_path, pycapcut):
     music.mkdir()
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=3",
                     str(music / "tone.mp3")], check=True)
+    (music / "licenses.json").write_text('{"tone.mp3": {"license": "CC0", "source": "generated"}}')
     Image.new("RGBA", (300, 120), (255, 0, 0, 200)).save(tmp_path / "logo.png")
     work = _render(tmp_path, CardImageProvider(), music_dir=str(music), logo_path=str(tmp_path / "logo.png"))
     timeline = json.loads((work / "timeline.json").read_text(encoding="utf-8"))

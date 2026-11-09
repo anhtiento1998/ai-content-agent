@@ -187,13 +187,13 @@ code { font-family: var(--mono); font-size: 0.86em; color: var(--cyan); backgrou
 .field { display: flex; flex-direction: column; gap: 7px; margin: 0 0 15px; border: 0; padding: 0; min-width: 0; }
 .label { font-size: 0.78rem; color: var(--cyan); padding: 0; }
 .label small { color: var(--faint); }
-input[type="text"], input[type="password"] {
+input[type="text"], input[type="password"], textarea {
   width: 100%; padding: 11px 13px; font: 0.95rem var(--sans); color: var(--text);
   background: rgba(4, 6, 18, 0.7); border: 1px solid var(--panel-border); border-radius: 10px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 input::placeholder { color: var(--faint); }
-input[type="text"]:focus, input[type="password"]:focus {
+input[type="text"]:focus, input[type="password"]:focus, textarea:focus {
   outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(77, 227, 255, 0.15), 0 0 24px rgba(77, 227, 255, 0.12);
 }
 :focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
@@ -479,3 +479,24 @@ td.nowrap { white-space: nowrap; font-family: var(--mono); font-size: 0.8rem; co
 .review-log { margin-top: 4px; font-size: 0.75rem; }
 .warn-note { color: var(--amber) !important; }
 @media (max-width: 560px) { .reviewer { width: 100%; } .reviewer input { flex: 1; width: auto; } }
+
+/* ---------- review facts ---------- */
+.facts { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
+.fact { font: 0.72rem var(--mono); color: var(--muted); padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(143, 153, 192, 0.25); overflow-wrap: anywhere; }
+.fact.warn { color: var(--amber); border-color: rgba(255, 200, 87, 0.4); }
+.fact.bad { color: var(--red); border-color: rgba(255, 84, 112, 0.45); }
+
+/* ---------- batches ---------- */
+textarea { resize: vertical; min-height: 110px; font-family: var(--mono); font-size: 0.85rem; line-height: 1.5; }
+.batch-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+.batch-row .grow { flex: 1 1 240px; margin-bottom: 15px; }
+.batch-row .btn { margin-bottom: 15px; }
+.small-note { font-size: 0.8rem; margin: 0 0 12px; }
+.batches { display: grid; gap: 12px; }
+.batch-card { padding: 14px; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(4, 6, 18, 0.45); display: grid; gap: 10px; min-width: 0; }
+.batch-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.batch-card details summary { cursor: pointer; font: 0.78rem var(--mono); color: var(--cyan); }
+.batch-items { margin: 8px 0 0; padding-left: 22px; display: grid; gap: 6px; max-height: 280px; overflow-y: auto; }
+.batch-items li { font-size: 0.85rem; overflow-wrap: anywhere; }
+.batch-items .badge { margin-right: 8px; }
+.batch-error { font-size: 0.75rem; margin-top: 2px; }

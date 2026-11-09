@@ -481,7 +481,7 @@ function buildJobCard(job, previousPercent, isNew) {
   const { steps, states, fraction } = sequenceFor(job);
   const platforms = job.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ") || "—";
   const meta = [
-    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại" }[job.source] || "▸ thủ công",
+    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt" }[job.source] || "▸ thủ công",
     job.dry_run ? "chạy thử" : platforms,
     formatTime(job.finished_at || job.started_at || job.created_at),
   ].join("  ·  ");
@@ -676,6 +676,7 @@ function buildReviewCard(run) {
     el("div", { class: "review-body" }, [
       el("div", { class: "review-title", text: run.title }),
       el("div", { class: "job-meta", text: `#${run.id} · ${run.topic} · ${formatTime(run.created_at)}` }),
+      reviewFacts(run),
       platforms,
       el("div", { class: "review-actions" }, [
         el("button", { type: "button", class: "btn small ok", "data-action": "approve", "data-run": String(run.id), text: "✓ Duyệt & đăng" }),
@@ -685,11 +686,41 @@ function buildReviewCard(run) {
   ]);
 }
 
+const HOOK_LABELS = { question: "mở bằng câu hỏi", shock: "mở bằng sự thật gây sốc", list: "mở bằng danh sách",
+  story: "mở bằng câu chuyện", myth: "phá lầm tưởng", contrast: "trước / sau" };
+
+/** What a reviewer should know before approving: variation used, similarity, pronunciation, music licence. */
+function reviewFacts(run) {
+  const facts = [];
+  const v = run.variation || {};
+  if (v.hook) facts.push(el("span", { class: "fact", text: HOOK_LABELS[v.hook] || v.hook }));
+  if (v.visual_style) facts.push(el("span", { class: "fact", text: `hình: ${v.visual_style}` }));
+  if (v.voice) facts.push(el("span", { class: "fact", text: `giọng: ${v.voice}` }));
+  const music = (run.provenance || {}).music;
+  if (music) {
+    facts.push(el("span", { class: `fact${music.license ? "" : " bad"}`, title: music.source || "",
+      text: `nhạc: ${music.file} · ${music.license || "THIẾU GIẤY PHÉP"}` }));
+  }
+  if (run.similar_to && run.similarity != null) {
+    const pct = Math.round(run.similarity * 100);
+    facts.push(el("span", { class: `fact ${pct >= 35 ? "bad" : "warn"}`,
+      title: "Độ trùng ý với kịch bản đã làm trước đó (3 từ liên tiếp giống nhau)",
+      text: `giống #${run.similar_to}: ${pct}%` }));
+  }
+  const pron = ((run.provenance || {}).pronunciation || {}).min;
+  if (pron != null) {
+    const pct = Math.round(pron * 100);
+    facts.push(el("span", { class: `fact ${pct < 60 ? "bad" : ""}`, title: "Tỷ lệ từ nhận dạng lại được từ giọng đọc (cảnh kém nhất)",
+      text: `phát âm: ${pct}%` }));
+  }
+  return facts.length ? el("div", { class: "facts" }, facts) : null;
+}
+
 function renderReviews(runs) {
   const count = $("review-count");
   count.textContent = String(runs.length);
   count.classList.toggle("zero", runs.length === 0);
-  if (!changed("reviews", runs.map((r) => [r.id, r.platforms]))) return;
+  if (!changed("reviews", runs.map((r) => [r.id, r.platforms, r.similarity, r.variation]))) return;
   const box = $("reviews");
   if (!runs.length) {
     box.replaceChildren(el("div", { class: "empty-state", text: "// không có video nào đang chờ duyệt" }));
@@ -759,6 +790,107 @@ async function onRunsClick(event) {
   }
 }
 
+// ---------- batches ----------
+
+const BATCH_STATUS = { active: ["Đang chạy", "info"], paused: ["Tạm dừng", "neutral"], finished: ["Xong", "ok"] };
+const ITEM_STATUS = {
+  queued: ["Chờ", "neutral"], running: ["Đang làm", "info"], review: ["Chờ duyệt", "warn"],
+  done: ["Xong", "ok"], skipped: ["Bỏ qua", "neutral"], failed: ["Lỗi", "bad"],
+};
+
+function batchCard(batch) {
+  const counts = batch.counts || {};
+  const finished = batch.total - (counts.queued || 0) - (counts.running || 0);
+  const percent = batch.total ? Math.round((finished / batch.total) * 100) : 0;
+  const [label, tone] = BATCH_STATUS[batch.status] || [batch.status, "neutral"];
+  const fill = el("div", { class: "thruster-fill" });
+  fill.style.width = `${percent}%`;
+  const summary = Object.entries(ITEM_STATUS)
+    .filter(([key]) => counts[key])
+    .map(([key, [text]]) => `${text} ${counts[key]}`).join(" · ");
+  const actions = [];
+  if (batch.status === "active") actions.push(["pause", "❚❚ Tạm dừng", ""]);
+  if (batch.status === "paused") actions.push(["resume", "▶ Tiếp tục", "ok"]);
+  if (counts.failed) actions.push(["retry", `↻ Làm lại ${counts.failed} mục lỗi`, ""]);
+  const items = el("ol", { class: "batch-items" }, batch.items.map((item) => {
+    const [itemLabel, itemTone] = ITEM_STATUS[item.status] || [item.status, "neutral"];
+    return el("li", {}, [
+      el("span", { class: `badge ${itemTone}`, text: itemLabel }),
+      el("span", { class: "batch-topic", text: item.topic }),
+      item.run_id ? el("span", { class: "muted", text: ` #${item.run_id}` }) : null,
+      item.error && item.status !== "done" ? el("div", { class: "muted batch-error", text: item.error }) : null,
+    ]);
+  }));
+  return el("article", { class: "batch-card" }, [
+    el("div", { class: "batch-head" }, [
+      el("div", {}, [
+        el("div", { class: "review-title", text: batch.name }),
+        el("div", { class: "job-meta", text: `#${batch.id} · ${finished}/${batch.total} · ${summary || "—"}` }),
+      ]),
+      el("span", { class: `badge ${tone}`, text: label }),
+    ]),
+    el("div", { class: "thruster", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100",
+      "aria-valuenow": String(percent) }, fill),
+    actions.length ? el("div", { class: "row-actions" }, actions.map(([action, text, cls]) =>
+      el("button", { type: "button", class: `btn small ${cls}`, "data-batch-action": action,
+        "data-batch": String(batch.id), text }))) : null,
+    el("details", {}, [el("summary", { text: `Xem ${batch.total} mục` }), items]),
+  ]);
+}
+
+function renderBatches(batches) {
+  const panel = $("batch-panel");
+  panel.hidden = batches === null;
+  if (batches === null || !changed("batches", batches)) return;
+  const open = new Set([...document.querySelectorAll("#batches details[open]")].map((d) => d.closest(".batch-card").dataset.id));
+  $("batches").replaceChildren(...(batches.length ? batches.map((b) => {
+    const card = batchCard(b);
+    card.dataset.id = String(b.id);
+    if (open.has(String(b.id))) card.querySelector("details").open = true;
+    return card;
+  }) : [el("div", { class: "empty-state", text: "// chưa có lô nào" })]));
+}
+
+async function submitBatch(event) {
+  event.preventDefault();
+  const errorBox = $("batch-error");
+  errorBox.hidden = true;
+  const manifest = $("batch-manifest").value.trim();
+  const platforms = [...document.querySelectorAll('input[name="platform"]:checked')].map((i) => i.value);
+  if (!manifest) {
+    errorBox.textContent = "Nhập ít nhất 1 chủ đề.";
+    errorBox.hidden = false;
+    return;
+  }
+  const button = $("batch-submit");
+  button.disabled = true;
+  try {
+    const batch = await api("/api/batches", { method: "POST", body: JSON.stringify({
+      manifest, platforms, name: $("batch-name").value.trim(), style: $("style").value.trim() }) });
+    $("batch-manifest").value = "";
+    $("batch-name").value = "";
+    toast("ok", "BATCH QUEUED", `Lô #${batch.id}: ${batch.total} video đã vào hàng đợi`);
+    state.signatures.batches = undefined;
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else {
+      errorBox.textContent = err.message;
+      errorBox.hidden = false;
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function onBatchClick(event) {
+  const button = event.target.closest("button[data-batch-action]");
+  if (!button || button.disabled) return;
+  const { batchAction, batch } = button.dataset;
+  await runAction(button, () => api(`/api/batches/${batch}/${batchAction}`, { method: "POST" }), null);
+  state.signatures.batches = undefined;
+}
+
 function renderErrors(errors) {
   if (!changed("errors", errors)) return;
   const body = $("errors");
@@ -807,9 +939,10 @@ async function refresh() {
       renderConfig(await api("/api/config"));
       state.configLoaded = true;
     }
-    const [stats, runs, errors, jobList, schedule, reviews] = await Promise.all([
+    const [stats, runs, errors, jobList, schedule, reviews, batches] = await Promise.all([
       api("/api/stats"), api("/api/runs"), api("/api/errors"), api("/api/jobs"), api("/api/schedule"),
       api("/api/reviews"),
+      api("/api/batches").catch((err) => { if (err instanceof AuthError) throw err; return null; }),
     ]);
     jobs = jobList;
     showApp();
@@ -819,6 +952,7 @@ async function refresh() {
     renderJobs(jobs);
     renderSchedule(schedule);
     renderReviews(reviews);
+    renderBatches(batches);
     state.firstLoad = false;
     $("updated-at").textContent = `telemetry synced ${new Date().toLocaleTimeString("vi-VN")}`;
   } catch (err) {
@@ -887,6 +1021,8 @@ document.addEventListener("DOMContentLoaded", () => {
   $("run-form").addEventListener("submit", submitRun);
   $("reviews").addEventListener("click", onReviewClick);
   $("runs").addEventListener("click", onRunsClick);
+  $("batch-form").addEventListener("submit", submitBatch);
+  $("batches").addEventListener("click", onBatchClick);
   $("jobs").addEventListener("click", (event) => {
     const button = event.target.closest("button[data-capcut]");
     if (button && !button.disabled) exportCapcut(button);

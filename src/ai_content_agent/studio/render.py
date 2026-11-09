@@ -63,11 +63,14 @@ def compose_final(
     cwd: str,
     music: str | None = None,
     logo: str | None = None,
+    fontsdir: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     inputs = ["-i", visuals, "-i", voice]
     next_index = 2
+    ass = f"ass={subtitles}:fontsdir={fontsdir}" if fontsdir else f"ass={subtitles}"
     filters = [
-        f"[0:v]ass={subtitles}[sub]",
+        f"[0:v]{ass}[sub]",
         "[1:a]loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000[voice]",
     ]
     video_label, audio_label = "sub", "voice"
@@ -98,6 +101,7 @@ def compose_final(
             "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-r", str(FPS),
             "-c:a", "aac", "-b:a", "192k",
             "-t", f"{duration:.3f}",
+            *[arg for key, value in (metadata or {}).items() for arg in ("-metadata", f"{key}={value}")],
             "-movflags", "+faststart",
             out,
         ],

@@ -115,6 +115,7 @@ def test_render_with_images_music_and_logo(tmp_path):
     music.mkdir()
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=330:duration=3",
                     str(music / "tone.mp3")], check=True)
+    (music / "licenses.json").write_text('{"tone.mp3": {"license": "CC0", "source": "generated"}}')
     Image.new("RGBA", (300, 120), (255, 0, 0, 200)).save(tmp_path / "logo.png")
     studio = VideoStudio(
         FakeText(), CardImageProvider(), SilentVoiceProvider(),
@@ -178,7 +179,7 @@ class FlakyVoice(SilentVoiceProvider):
         self.calls = 0
         self._error, self._failures = error, failures
 
-    def synthesize(self, text, out_path):
+    def synthesize(self, text, out_path, *, voice=None):
         self.calls += 1
         if self.calls <= self._failures:
             raise self._error

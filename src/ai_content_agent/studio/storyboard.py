@@ -6,6 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from ai_content_agent.providers.base import ScriptResult, TextGenerator, parse_json_object
+from ai_content_agent.studio.vi_text import nfc
 
 LANGUAGES = {"vi": "Vietnamese", "en": "English"}
 WORDS_PER_SECOND = 2.5
@@ -38,16 +39,30 @@ class Storyboard:
         return asdict(self)
 
 
-def build_storyboard_prompt(topic: str, *, style: str = "", language: str = "vi", target_seconds: int = 40) -> str:
+def build_storyboard_prompt(
+    topic: str,
+    *,
+    style: str = "",
+    language: str = "vi",
+    target_seconds: int = 40,
+    hook: str = "",
+    avoid: str = "",
+) -> str:
     lang = LANGUAGES.get(language, language)
     words = round(target_seconds * WORDS_PER_SECOND)
     max_scenes = min(MAX_SCENES, max(4, target_seconds // 5))
-    return f"""You are a short-form video director. Plan a vertical 9:16 video about: {topic}
-Style: {style or "engaging, fast-paced, social-media friendly"}
+    hook_rule = f" {hook}" if hook else ""
+    avoid_rule = (
+        f"\n- This channel already published a very similar script; take a clearly different angle, structure "
+        f"and wording. Do not reuse its sentences:\n  \"{avoid[:600]}\""
+        if avoid else ""
+    )
+    return f"""You are a short-form video director. Plan a vertical 9:16 video about: {nfc(topic)}
+Style: {nfc(style) or "engaging, fast-paced, social-media friendly"}
 Target length: about {target_seconds} seconds of narration (~{words} words in total), split into 3 to {max_scenes} scenes.
 
 Rules:
-- Scene 1 is a hook that makes viewers keep watching.
+- Scene 1 is a hook that makes viewers keep watching.{hook_rule}{avoid_rule}
 - "narration": the voice-over for that scene, in {lang}, natural spoken style, no emojis, no stage directions.
 - "visual_prompt": in English, a vivid description of the shot for an image/video generation model
   (subject, setting, lighting, camera angle, mood). Never ask for text, captions, logos or watermarks.
@@ -64,7 +79,7 @@ def _text(value, field_name: str, *, required: bool = True) -> str:
         return ""
     if not isinstance(value, str) or (required and not value.strip()):
         raise ValueError(f"storyboard field {field_name!r} must be a non-empty string")
-    return value.strip()
+    return nfc(value.strip())
 
 
 def parse_storyboard(text: str) -> Storyboard:
@@ -91,13 +106,33 @@ def parse_storyboard(text: str) -> Storyboard:
     return Storyboard(
         title=_text(data.get("title"), "title")[:100],
         description=_text(data.get("description"), "description", required=False),
-        hashtags=[str(tag).strip().lstrip("#").replace(" ", "") for tag in hashtags if str(tag).strip("# ")],
+        hashtags=[nfc(str(tag)).strip().lstrip("#").replace(" ", "") for tag in hashtags if str(tag).strip("# ")],
         scenes=scenes,
     )
 
 
 def write_storyboard(
-    writer: TextGenerator, topic: str, *, style: str = "", language: str = "vi", target_seconds: int = 40
+    writer: TextGenerator,
+    topic: str,
+    *,
+    style: str = "",
+    language: str = "vi",
+    target_seconds: int = 40,
+    hook: str = "",
+    avoid: str = "",
 ) -> Storyboard:
-    prompt = build_storyboard_prompt(topic, style=style, language=language, target_seconds=target_seconds)
+    prompt = build_storyboard_prompt(
+        topic, style=style, language=language, target_seconds=target_seconds, hook=hook, avoid=avoid
+    )
     return parse_storyboard(writer.complete(prompt))
+
+
+def storyboard_from_dict(data: dict) -> Storyboard:
+    """Rebuild a storyboard saved by Storyboard.to_dict() (batch checkpoints)."""
+
+    return Storyboard(
+        title=data["title"],
+        description=data.get("description", ""),
+        hashtags=list(data.get("hashtags", [])),
+        scenes=[Scene(**scene) for scene in data.get("scenes", [])],
+    )

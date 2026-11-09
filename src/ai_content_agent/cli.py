@@ -48,6 +48,20 @@ def main() -> None:
     schedule_p.add_argument("--cron", default="0 9 * * *", type=_cron)
     schedule_p.add_argument("--platform", action="append", dest="platforms", required=True, choices=list(PUBLISHERS))
 
+    batch_p = sub.add_parser(
+        "batch",
+        help="Produce a batch from a manifest (JSONL, JSON array or one topic per line); resumable",
+    )
+    batch_p.add_argument("manifest", nargs="?", help="Manifest file; omit with --resume")
+    batch_p.add_argument("--platform", action="append", dest="platforms", default=[], choices=list(PUBLISHERS),
+                         help="Default platforms for items that do not set their own (repeatable)")
+    batch_p.add_argument("--name", default="")
+    batch_p.add_argument("--style", default="", help="Default style for items without one")
+    batch_p.add_argument("--resume", nargs="?", type=int, const=0, default=None, metavar="BATCH_ID",
+                         help="Continue queued items (of one batch, or all active batches)")
+    batch_p.add_argument("--retry-failed", action="store_true", help="With --resume ID: re-queue failed items")
+    sub.add_parser("batches", help="List batches and their progress")
+
     history_p = sub.add_parser("history", help="Show recently generated/published runs")
     history_p.add_argument("--limit", type=int, default=20)
 
@@ -143,6 +157,9 @@ def main() -> None:
             platforms = ", ".join(p.platform for p in run.publishes) or "not published"
             print(f"[{run.created_at}] #{run.id} {run.title!r} (topic={run.topic!r}) -> {platforms}")
 
+    elif args.command in ("batch", "batches"):
+        _batch_commands(args, agent, config, batch_p)
+
     elif args.command in ("review", "approve", "reject", "publish", "takedown"):
         _review_commands(args, agent, config)
 
@@ -180,6 +197,53 @@ def main() -> None:
         serve(
             config, host=args.host, port=args.port, cron=args.cron, topics=args.topics, platforms=args.platforms
         )
+
+
+def _batch_commands(args, agent: ContentAgent, config: Config, parser) -> None:
+    from ai_content_agent.pipeline.batch import BatchRunner, BatchStore, load_manifest
+
+    store = BatchStore(config.history_db_path)
+    if args.command == "batches":
+        batches = store.list()
+        if not batches:
+            print("No batches yet.")
+        for batch in batches:
+            counts = ", ".join(f"{k} {v}" for k, v in sorted(batch.counts.items()))
+            print(f"#{batch.id} {batch.name!r} [{batch.status}] {batch.total} items: {counts}")
+        return
+
+    if args.resume is None:
+        if not args.manifest:
+            parser.error("give a manifest file, or --resume")
+        try:
+            items = load_manifest(args.manifest)
+        except (OSError, ValueError) as exc:
+            sys.exit(f"Manifest error: {exc}")
+        if not args.platforms and any(item.platforms is None for item in items):
+            parser.error("--platform is required unless every item sets its own platforms")
+        for item in items:
+            item.style = item.style or args.style
+        batch_id = store.create(args.name or Path(args.manifest).stem, args.platforms, items)
+        print(f"Batch #{batch_id}: {len(items)} items queued. Ctrl+C is safe — continue with "
+              f"`ai-content-agent batch --resume {batch_id}`.")
+    else:
+        batch_id = args.resume or None
+        if args.retry_failed and batch_id:
+            print(f"Re-queued {store.retry_failed(batch_id)} failed item(s).")
+        store.recover()
+
+    def report(item, status: str) -> None:
+        fresh = store.get(item.batch_id, with_items=False)
+        done = fresh.total - fresh.counts.get("queued", 0) - fresh.counts.get("running", 0)
+        print(f"[{done}/{fresh.total}] {item.topic!r}: {status}", flush=True)
+
+    BatchRunner(store, agent.build_pipeline).run_all(batch_id, on_item=report)
+    for batch in [store.get(batch_id)] if batch_id else store.list(limit=5):
+        counts = ", ".join(f"{k} {v}" for k, v in sorted(batch.counts.items()))
+        print(f"Batch #{batch.id} [{batch.status}]: {counts}")
+        for item in batch.items:
+            if item.status == "failed":
+                print(f"  failed: {item.topic!r} — {item.error}")
 
 
 def _review_commands(args, agent: ContentAgent, config: Config) -> None:

@@ -96,9 +96,30 @@ xác nhận.
 40 giây ≈ 1 lần gọi kịch bản + 4–8 ảnh (hoặc 4–8 clip Veo) + 4–8 lần đọc
 giọng.
 
-Phụ đề được căn thời gian theo độ dài từng câu trong mỗi cảnh (không phải
-nhận dạng giọng từng từ), nên luôn khớp đầu/cuối cảnh nhưng có thể lệch
-nhẹ trong cảnh dài.
+## Phụ đề và tiếng Việt
+
+- **Phụ đề theo từng từ** (`CAPTION_STYLE=karaoke`, mặc định): mỗi dòng
+  hiện 1 cụm ngắn, từ nào đang được đọc thì tô vàng dần. `phrase` = dòng
+  chữ trắng như cũ.
+- **Thời gian từng từ**: mặc định ước lượng theo số âm tiết *khi đọc* (ví dụ
+  "2026" tính là 7 âm tiết) cộng khoảng nghỉ ở dấu câu — luôn khớp đầu/cuối
+  cảnh. `CAPTION_ALIGNER=whisper` (cài `pip install -e ".[align]"`) nghe
+  lại giọng đọc bằng faster-whisper để lấy thời gian thật từng từ, đồng thời
+  chấm **điểm phát âm** (tỷ lệ từ nhận dạng lại được); cảnh dưới 60% được
+  đánh dấu đỏ trong khu Chờ duyệt. Lần đầu sẽ tải model (`WHISPER_MODEL`,
+  mặc định `small`) từ Hugging Face. *Phần này chưa chạy thử với model
+  thật.*
+- **Chuẩn hoá Unicode NFC** cho kịch bản, giọng đọc và phụ đề (văn bản
+  tiếng Việt dạng tổ hợp làm vỡ dấu trên Windows).
+- **Đọc số cho TTS**: trước khi gửi giọng đọc, số/ngày/giờ/đơn vị được đổi
+  thành chữ — "26°C" → "hai mươi sáu độ C", "50.000đ" → "năm mươi nghìn
+  đồng", "5/11/2026" → "ngày năm tháng mười một năm hai nghìn không trăm
+  hai mươi sáu", "9h30", "15%", "5 km", "3–5"... Phụ đề vẫn giữ chữ số.
+- **Font đóng gói sẵn**: Be Vietnam Pro (giấy phép SIL OFL, file trong
+  `src/ai_content_agent/assets/fonts/`), đủ dấu tiếng Việt trên mọi máy.
+  Đổi bằng `SUBTITLE_FONT` (phải là font đã cài trên máy).
+- **Nhãn AI trên video**: `AI_LABEL_OVERLAY=true` (mặc định) giữ dòng
+  `AI_DISCLOSURE_TEXT` nhỏ ở góc trên trái suốt video.
 
 ## Cài đặt (Windows)
 
@@ -120,8 +141,18 @@ copy .env.example .env    # rồi mở .env điền API key
 (macOS/Linux: `brew install ffmpeg` hoặc `sudo apt install ffmpeg`,
 kích hoạt venv bằng `source .venv/bin/activate`.)
 
-Nhạc nền: bỏ file `.mp3`/`.wav` không bản quyền vào `assets/music/`, mỗi
-video chọn ngẫu nhiên 1 bài. Logo: đặt `BRAND_LOGO_PATH` tới 1 file PNG.
+Nhạc nền: bỏ file `.mp3`/`.wav` vào `assets/music/` **và khai báo giấy
+phép** của từng bài trong `assets/music/licenses.json`:
+
+```json
+{
+  "lofi-morning.mp3": {"license": "Pixabay Content License", "source": "https://pixabay.com/music/...", "attribution": ""}
+}
+```
+
+Bài không có giấy phép sẽ không được dùng (`REQUIRE_MUSIC_LICENSE=true`),
+vì Content ID và điều khoản của các dịch vụ nhạc AI là nguyên nhân phổ biến
+khiến kênh mất kiếm tiền. Logo: đặt `BRAND_LOGO_PATH` tới 1 file PNG.
 
 ## Xem thử bố cục gần như không tốn API
 
@@ -152,6 +183,65 @@ biệt hoa thường/khoảng trắng). Muốn đăng lại vẫn được:
 ```bash
 ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --platform youtube --force
 ```
+
+## Sản xuất hàng loạt
+
+Trên dashboard, khu **Xưởng hàng loạt**: dán danh sách chủ đề (mỗi dòng
+một chủ đề, hoặc JSON Lines), chọn nền tảng ở LAUNCH PAD, bấm *Tạo lô*.
+Trên CLI:
+
+```bash
+ai-content-agent batch chu_de.txt --platform youtube --platform facebook
+ai-content-agent batches                      # tiến độ các lô
+ai-content-agent batch --resume 3             # chạy tiếp lô #3 (sau khi tắt máy / Ctrl+C)
+ai-content-agent batch --resume 3 --retry-failed
+```
+
+File danh sách có thể là văn bản thường, JSON Lines hoặc mảng JSON:
+
+```
+# dòng bắt đầu bằng # được bỏ qua
+5 mẹo tiết kiệm điện mùa hè
+{"topic": "Cách chọn dưa hấu ngọt", "style": "hài hước", "platforms": ["tiktok"]}
+```
+
+- Mỗi mục là một dòng trong SQLite (`HISTORY_DB_PATH`): tắt app giữa chừng
+  không mất gì, lần mở sau mục đang chạy dở được làm tiếp **từ checkpoint**
+  — dùng lại kịch bản đã viết và các cảnh giọng/hình đã tạo, không trả tiền
+  lần hai.
+- Một mục lỗi không làm dừng cả lô. Lỗi tạm thời (429, 5xx, mất mạng) được
+  thử lại tối đa 3 lần, chờ tăng dần; lỗi khác ghi vào mục, bấm *Làm lại
+  mục lỗi* sau khi sửa.
+- Lô chạy **từng video một** qua cùng hàng đợi với các việc khác, nên không
+  nhân chi phí hay số request đồng thời. Video làm xong vào khu Chờ duyệt
+  như thường (vẫn chịu giới hạn đăng mỗi ngày).
+
+## Biến thể và chống trùng nội dung
+
+Chính sách spam của YouTube nêu đích danh "cùng nhạc nền… kịch bản do AI
+viết" lặp lại giữa các video. Mỗi video được gán một **kế hoạch biến thể**
+xoay vòng theo các video gần nhất (lưu trong lịch sử, không lặp lại cái vừa
+dùng):
+
+| Chiều | Lựa chọn | Cấu hình |
+|---|---|---|
+| Cách mở đầu | câu hỏi, sự thật gây sốc, danh sách, câu chuyện, phá lầm tưởng, trước/sau | `HOOK_STYLES` |
+| Phong cách hình | cinematic, documentary, illustration, 3d, anime, watercolor | `VISUAL_STYLES` |
+| Giọng đọc | danh sách giọng của engine, ví dụ `Kore,Puck,Charon` | `VOICE_NAMES` |
+| Nhạc nền | các bài có giấy phép trong `assets/music` | — |
+
+Kịch bản mới được so với các kịch bản gần đây (trùng cụm 3 từ). Nếu giống
+từ `SIMILARITY_THRESHOLD`% trở lên (mặc định 35), app yêu cầu AI viết lại
+một lần theo góc khác; độ giống còn lại hiện trên thẻ Chờ duyệt (đỏ nếu
+vượt ngưỡng). Tắt toàn bộ bằng `VARIATION=false`.
+
+## Nguồn gốc (provenance)
+
+Mỗi video có `provenance.json` cạnh `final.mp4`: engine và model đã viết,
+vẽ, đọc; nhạc và giấy phép; kế hoạch biến thể; nhãn AI; điểm phát âm. Tóm
+tắt được ghi vào metadata MP4 (`comment`/`description`). Video có nhạc
+không giấy phép sẽ **không được đăng**. Đây chưa phải chứng chỉ C2PA có
+chữ ký số (cần chứng thư ký số riêng) — xem Roadmap.
 
 ## Xem lịch sử đã sinh/đăng
 
@@ -414,7 +504,13 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).
 - [ ] Xem trước video + sửa kịch bản từng cảnh ngay trên dashboard trước
       khi dựng.
-- [ ] Phụ đề khớp từng từ (nhận dạng giọng đọc để lấy thời gian chính xác).
+- [x] Phụ đề theo từng từ (karaoke), chuẩn hoá NFC, đọc số tiếng Việt, font đóng gói.
+- [x] Căn thời gian từng từ + điểm phát âm bằng faster-whisper (tuỳ chọn, chưa thử với model thật).
+- [x] Sản xuất hàng loạt có hàng đợi bền và checkpoint.
+- [x] Biến thể (hook, hình, giọng, nhạc) và chống trùng kịch bản.
+- [x] Sổ giấy phép nhạc, provenance.json, metadata, nhãn AI trên video.
+- [ ] Chứng chỉ C2PA có chữ ký số.
+- [ ] Tự loại định dạng kém dựa trên số liệu xem (cần tài khoản thật chạy một thời gian).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
       `MetaMuseVideoProvider.generate_clip()`.
 - [ ] Quản lý danh sách chủ đề cho lịch tự động ngay trên dashboard

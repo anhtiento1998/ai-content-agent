@@ -49,7 +49,7 @@ class FakeText(TextGenerator):
 class FailingVoice(VoiceGenerator):
     name = "failing-voice"
 
-    def synthesize(self, text, out_path):
+    def synthesize(self, text, out_path, *, voice=None):
         raise RuntimeError("voice service down")
 
 
@@ -75,8 +75,9 @@ class FakeStudio:
         self._video_path = video_path
         self._fail_stage = fail_stage
 
-    def produce(self, topic, *, style="", progress=None):
+    def produce(self, topic, *, style="", progress=None, plan=None, checkpoint=None, review=None):
         self.calls += 1
+        self.last_plan, self.last_review = plan, review
         report = progress or (lambda *_: None)
         report("script", 0, 0)
         report("assets", 2, 2)

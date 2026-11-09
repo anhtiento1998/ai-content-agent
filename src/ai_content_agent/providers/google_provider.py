@@ -84,7 +84,7 @@ class GeminiVoiceProvider(VoiceGenerator):
         self._model = model
         self._voice = voice
 
-    def synthesize(self, text: str, out_path: str) -> None:
+    def synthesize(self, text: str, out_path: str, *, voice: str | None = None) -> None:
         from google.genai import types
 
         response = self._client.models.generate_content(
@@ -94,7 +94,7 @@ class GeminiVoiceProvider(VoiceGenerator):
                 response_modalities=["AUDIO"],
                 speech_config=types.SpeechConfig(
                     voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=self._voice)
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice or self._voice)
                     )
                 ),
             ),

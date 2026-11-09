@@ -1,10 +1,16 @@
-"""Topic -> studio (storyboard + rendered video) -> thumbnail -> review -> publish.
+"""Topic -> variation plan -> studio (storyboard + rendered video) -> thumbnail -> review -> publish.
 
 This is the one place that wires the studio and publishers together. With
 `require_approval` a rendered run waits in the review queue (status
 pending_review) and is published later by `publish_run` — the same method
 that retries only the platforms that failed, so a retry never re-renders
 or double-posts.
+
+Before rendering, each run gets a VariationPlan (hook, look, voice, music)
+rotated against recent runs, and its storyboard is compared with recent
+scripts: a near-copy is rewritten once, and the remaining similarity is
+stored for the reviewer. A run whose provenance shows unlicensed music is
+never published.
 """
 
 from __future__ import annotations
@@ -20,7 +26,9 @@ from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 from ai_content_agent.publishers.base import PLATFORM_DAILY_LIMITS, Publisher, PublishRejected, PublishResult
 from ai_content_agent.studio import StudioStageError, VideoStudio
-from ai_content_agent.studio.studio import Progress
+from ai_content_agent.studio.provenance import publish_blocker
+from ai_content_agent.studio.studio import Checkpoint, Progress
+from ai_content_agent.studio.variation import SIMILARITY_THRESHOLD, Variator, most_similar
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +46,8 @@ class RunOutcome:
     capcut_draft: str | None = None
     run_id: int | None = None
     pending_review: bool = False
+    similarity: float | None = None
+    similar_to: int | None = None
 
 
 class ContentPipeline:
@@ -52,6 +62,9 @@ class ContentPipeline:
         capcut_exporter: CapCutExporter | None = None,
         require_approval: bool = False,
         max_posts_per_day: int = 0,
+        variator: Variator | None = None,
+        similarity_threshold: float = SIMILARITY_THRESHOLD,
+        require_music_license: bool = True,
     ) -> None:
         if require_approval and history is None:
             raise ValueError("require_approval needs a HistoryStore to hold the review queue")
@@ -63,6 +76,13 @@ class ContentPipeline:
         self._capcut_exporter = capcut_exporter
         self._require_approval = require_approval
         self._max_posts_per_day = max_posts_per_day
+        self._variator = variator
+        self._similarity_threshold = similarity_threshold
+        self._require_music_license = require_music_license
+
+    @property
+    def history(self) -> HistoryStore | None:
+        return self._history
 
     @property
     def publisher_names(self) -> list[str]:
@@ -88,9 +108,11 @@ class ContentPipeline:
         dry_run: bool = False,
         force: bool = False,
         progress: Progress | None = None,
+        checkpoint: Checkpoint | None = None,
     ) -> RunOutcome:
         """Produce a video for `topic`; then queue it for review, or publish it right away.
-        `progress(stage, done, total)` reports script -> assets -> render -> publish."""
+        `progress(stage, done, total)` reports script -> assets -> render -> publish.
+        `checkpoint` lets a batch resume a crashed run without paying for finished steps."""
 
         report = progress or _no_progress
         if self._studio is None:
@@ -104,12 +126,32 @@ class ContentPipeline:
             )
             return RunOutcome(skipped=True)
 
+        plan = None
+        if self._variator:
+            music = getattr(self._studio, "music", None)
+            recent = self._history.recent_variations() if self._history else []
+            plan = self._variator.plan(recent, music.usable_tracks() if music else [])
+        corpus = self._history.recent_scripts() if self._history and self._similarity_threshold else []
+
+        def review(candidate) -> str | None:
+            run_id, score = most_similar(candidate.to_script_result().script, corpus)
+            if run_id is not None and score >= self._similarity_threshold:
+                logger.warning("Script is %.0f%% similar to run #%s", score * 100, run_id)
+                return dict(corpus)[run_id]
+            return None
+
         try:
-            storyboard, video = self._studio.produce(topic, style=style, progress=report)
+            storyboard, video = self._studio.produce(
+                topic, style=style, progress=report, plan=plan, checkpoint=checkpoint,
+                review=review if corpus else None,
+            )
         except StudioStageError as exc:
             self._record_error(topic, exc.stage, exc)
             raise
         script = storyboard.to_script_result()
+        # Compared like for like with history.recent_scripts(): description + narration.
+        similar_to, similarity = most_similar(script.script, corpus) if corpus else (None, 0.0)
+        raw = video.raw or {}
 
         if self._make_thumbnails:
             try:
@@ -129,22 +171,36 @@ class ContentPipeline:
                 logger.exception("CapCut export failed — continuing without a draft")
                 self._record_error(topic, "capcut", exc)
 
-        outcome = RunOutcome(script=script, video=video, capcut_draft=capcut_draft)
+        outcome = RunOutcome(script=script, video=video, capcut_draft=capcut_draft,
+                             similarity=round(similarity, 3) if similar_to else None, similar_to=similar_to)
         if dry_run:
             logger.info("Dry run — skipping review and publish. Video at %s", video.file_path)
             return outcome
 
         if self._history:
             outcome.run_id = self._history.record_run(
-                topic, script, video, status=PENDING, platforms=self.publisher_names
+                topic, script, video, status=PENDING, platforms=self.publisher_names,
+                variation=raw.get("variation") or (plan.to_dict() if plan else None),
+                provenance=raw.get("provenance"), similarity=outcome.similarity, similar_to=similar_to,
             )
         if self._require_approval:
             logger.info("Run #%s is waiting for review: %s", outcome.run_id, video.file_path)
             outcome.pending_review = True
             return outcome
 
+        blocker = publish_blocker(raw.get("provenance"), require_license=self._require_music_license)
+        if blocker:
+            self._block(outcome.run_id, topic, blocker)
+            return outcome
         outcome.published = self._publish(outcome.run_id, topic, script, video, report)
         return outcome
+
+    def _block(self, run_id: int | None, topic: str, message: str) -> None:
+        logger.error(message)
+        if self._history:
+            self._history.record_error(topic, "publish", message, run_id=run_id)
+            if run_id is not None and self._history.get_run(run_id).status == PENDING:
+                self._history.set_run_status(run_id, FAILED)
 
     def publish_run(
         self, run_id: int, *, progress: Progress | None = None, actor: str | None = None, action: str = "approve"
@@ -162,6 +218,10 @@ class ContentPipeline:
             raise ValueError(f"Run #{run_id} was rejected; produce the topic again instead")
         if not run.video_path or not Path(run.video_path).is_file():
             raise FileNotFoundError(f"Video for run #{run_id} is missing: {run.video_path}")
+        blocker = publish_blocker(run.provenance, require_license=self._require_music_license)
+        if blocker:
+            self._history.record_error(run.topic, "publish", blocker, run_id=run_id)
+            raise ValueError(blocker)
 
         script, video = run.script_result(), run.video_result()
         try:

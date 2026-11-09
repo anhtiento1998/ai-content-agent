@@ -31,8 +31,19 @@ class Config:
     output_dir: str = "output"
     music_dir: str = "assets/music"
     brand_logo_path: str | None = None
-    subtitle_font: str = "Arial"
+    subtitle_font: str = "Be Vietnam Pro"
+    caption_style: str = "karaoke"
+    caption_aligner: str = "estimate"
+    whisper_model: str = "small"
     keep_intermediates: bool = False
+
+    variation: bool = True
+    voice_names: str | None = None
+    visual_styles: str | None = None
+    hook_styles: str | None = None
+    similarity_threshold: int = 35
+    require_music_license: bool = True
+    ai_label_overlay: bool = True
 
     capcut_export: bool = False
     capcut_drafts_dir: str | None = None
@@ -120,6 +131,8 @@ class Config:
                 "silent": entry(True),
             },
             "capcut": capcut_status(),
+            "music": self._music_status(),
+            "captions": {"style": self.caption_style, "aligner": self.caption_aligner, "font": self.subtitle_font},
             "platforms": {
                 "youtube": entry(
                     Path(self.youtube_token_file).exists(),
@@ -132,6 +145,18 @@ class Config:
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
             },
         }
+
+    def _music_status(self) -> dict:
+        from ai_content_agent.studio.provenance import MusicLibrary
+
+        try:
+            return MusicLibrary(self.music_dir, self.require_music_license).status()
+        except RuntimeError as exc:
+            return {"tracks": 0, "licensed": 0, "require_license": self.require_music_license, "error": str(exc)}
+
+    @staticmethod
+    def split_list(value: str | None) -> list[str]:
+        return [item.strip() for item in (value or "").split(",") if item.strip()]
 
     def _youtube_token_warning(self) -> str | None:
         from ai_content_agent.publishers.youtube_publisher import TESTING_TOKEN_DAYS, token_age_days
