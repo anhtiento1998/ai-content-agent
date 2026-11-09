@@ -337,9 +337,41 @@ function renderConfig(cfg) {
     const input = el("input", { type: "checkbox", name: "platform", value: name, disabled: !info.ready });
     return el("label", { class: `platform${info.ready ? "" : " disabled"}` }, [
       input,
-      el("span", {}, [el("span", { text: PLATFORM_LABELS[name] || name }), info.note ? el("small", { text: info.note }) : null]),
+      el("span", {}, [
+        el("span", { text: PLATFORM_LABELS[name] || name }),
+        info.note ? el("small", { text: info.note }) : null,
+        info.warning ? el("small", { class: "warn-note", text: `⚠ ${info.warning}` }) : null,
+      ]),
     ]);
   }));
+}
+
+const REVIEWER_KEY = "aca.reviewer";
+
+function reviewer() {
+  return $("reviewer").value.trim();
+}
+
+function initReviewer() {
+  const input = $("reviewer");
+  try { input.value = localStorage.getItem(REVIEWER_KEY) || ""; } catch { /* storage unavailable */ }
+  input.addEventListener("change", () => {
+    try { localStorage.setItem(REVIEWER_KEY, reviewer()); } catch { /* storage unavailable */ }
+  });
+}
+
+function reviewBody(extra = {}) {
+  return JSON.stringify({ reviewer: reviewer(), ...extra });
+}
+
+const REVIEW_ACTIONS = { approve: "duyệt", reject: "từ chối", retry: "đăng lại", takedown: "gỡ" };
+
+function lastReview(run) {
+  const entry = (run.reviews || [])[run.reviews.length - 1];
+  if (!entry) return null;
+  const who = entry.actor.replace(/^dashboard:?/, "").replace(/^cli:?/, "CLI ") || "dashboard";
+  const text = `${REVIEW_ACTIONS[entry.action] || entry.action} bởi ${who} · ${relativeTime(entry.created_at)}`;
+  return el("div", { class: "muted review-log", title: entry.note || "", text: entry.note ? `${text} — “${entry.note}”` : text });
 }
 
 function renderStats(stats) {
@@ -595,7 +627,7 @@ function renderRuns(runs) {
     return el("tr", { class: fresh ? "fresh" : "" }, [
       el("td", { class: "nowrap", "data-label": "Thời gian", text: formatTime(run.created_at) }),
       el("td", { "data-label": "Tiêu đề" }, [el("div", { text: run.title }), el("div", { class: "muted", text: run.topic })]),
-      el("td", { "data-label": "Trạng thái" }, runBadge(run.status)),
+      el("td", { "data-label": "Trạng thái" }, [runBadge(run.status), lastReview(run)]),
       el("td", { "data-label": "Đã đăng" }, [
         publishLinks(live),
         removed.length ? el("div", { class: "taken-down", text: `đã gỡ: ${removed.map((p) => PLATFORM_LABELS[p.platform] || p.platform).join(", ")}` }) : null,
@@ -701,11 +733,12 @@ async function onReviewClick(event) {
       toast("warn", "CHỌN NỀN TẢNG", "Chọn ít nhất 1 nền tảng để đăng.");
       return;
     }
-    await runAction(button, () => api(`/api/runs/${runId}/approve`, { method: "POST", body: JSON.stringify({ platforms }) }),
+    await runAction(button, () => api(`/api/runs/${runId}/approve`, { method: "POST", body: reviewBody({ platforms }) }),
       ["info", "APPROVED", `Đang đăng video #${runId} lên ${platforms.map((p) => PLATFORM_LABELS[p]).join(", ")}`]);
   } else if (button.dataset.action === "reject") {
-    if (!window.confirm(`Từ chối video #${runId}? Video sẽ không được đăng.`)) return;
-    await runAction(button, () => api(`/api/runs/${runId}/reject`, { method: "POST" }),
+    const reason = window.prompt(`Từ chối video #${runId}? Video sẽ không được đăng.\nLý do (không bắt buộc, ghi vào nhật ký):`, "");
+    if (reason === null) return;
+    await runAction(button, () => api(`/api/runs/${runId}/reject`, { method: "POST", body: reviewBody({ reason: reason.trim() }) }),
       ["info", "REJECTED", `Đã từ chối video #${runId}`]);
   }
 }
@@ -715,12 +748,13 @@ async function onRunsClick(event) {
   if (!button || button.disabled) return;
   const runId = button.dataset.run;
   if (button.dataset.action === "retry") {
-    await runAction(button, () => api(`/api/runs/${runId}/publish`, { method: "POST", body: JSON.stringify({ platforms: [] }) }),
+    await runAction(button, () => api(`/api/runs/${runId}/publish`, { method: "POST", body: reviewBody({ platforms: [] }) }),
       ["info", "RETRY", `Đang đăng lại video #${runId} lên các nền tảng còn thiếu`]);
   } else if (button.dataset.action === "takedown") {
     const label = PLATFORM_LABELS[button.dataset.platform] || button.dataset.platform;
-    if (!window.confirm(`Gỡ video #${runId} khỏi ${label}? Thao tác này xóa bài trên nền tảng.`)) return;
-    await runAction(button, () => api(`/api/runs/${runId}/takedown`, { method: "POST", body: JSON.stringify({ platform: button.dataset.platform }) }),
+    const reason = window.prompt(`Gỡ video #${runId} khỏi ${label}? Thao tác này xóa bài trên nền tảng.\nLý do (không bắt buộc):`, "");
+    if (reason === null) return;
+    await runAction(button, () => api(`/api/runs/${runId}/takedown`, { method: "POST", body: reviewBody({ platform: button.dataset.platform, reason: reason.trim() }) }),
       ["ok", "TAKEN DOWN", `Đã gỡ video #${runId} khỏi ${label}`]);
   }
 }
@@ -848,6 +882,7 @@ function submitAuth(event) {
 
 document.addEventListener("DOMContentLoaded", () => {
   startStarfield();
+  initReviewer();
   loadToken();
   $("run-form").addEventListener("submit", submitRun);
   $("reviews").addEventListener("click", onReviewClick);

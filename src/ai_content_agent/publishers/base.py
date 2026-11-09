@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
@@ -33,12 +34,29 @@ class Disclosure:
         return f"{body}\n\n{self.text}" if self.enabled and self.text else body
 
 
+class PublishRejected(RuntimeError):
+    """The platform refused the post before receiving it (bad privacy, too short, ...). Nothing was
+    uploaded, so a retry never needs to look for a half-finished copy."""
+
+
+# Hard posting limits per platform per rolling 24 h, applied on top of MAX_POSTS_PER_DAY:
+# YouTube uploads 100/day per Cloud project (since 1 Jun 2026), TikTok ~15/day per creator,
+# Facebook 30 API-published reels per Page.
+PLATFORM_DAILY_LIMITS = {"youtube": 100, "tiktok": 15, "facebook": 30}
+
+
 class Publisher(ABC):
     name: str
 
     @abstractmethod
     def publish(self, video: VideoResult, script: ScriptResult) -> PublishResult:
         ...
+
+    def find_existing(self, script: ScriptResult, since: datetime) -> PublishResult | None:
+        """Look on the platform for a post of this script made since `since` — used before re-uploading
+        after an attempt whose result was never recorded. Platforms that cannot search return None."""
+
+        return None
 
     def delete(self, remote_id: str) -> None:
         """Take a published post down. Platforms without a delete API raise NotImplementedError."""

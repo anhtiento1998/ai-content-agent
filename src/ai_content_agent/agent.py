@@ -17,6 +17,7 @@ from ai_content_agent.publishers import (
     FacebookPublisher,
     TikTokPublisher,
     TikTokTokens,
+    UploadPostPublisher,
     YouTubePublisher,
 )
 from ai_content_agent.publishers.base import Publisher
@@ -93,7 +94,16 @@ class ContentAgent:
                         disclosure=disclosure,
                     )
                 )
+            elif platform == "tiktok" and c.tiktok_via == "upload-post":
+                publishers.append(
+                    UploadPostPublisher(
+                        api_key=c.upload_post_api_key, user=c.upload_post_user, platform="tiktok",
+                        privacy_level=c.tiktok_privacy_level, disclosure=disclosure,
+                    )
+                )
             elif platform == "tiktok":
+                if c.tiktok_via != "api":
+                    raise ValueError(f"TIKTOK_VIA must be api or upload-post, got {c.tiktok_via!r}")
                 tokens = TikTokTokens(
                     access_token=c.tiktok_access_token,
                     client_key=c.tiktok_client_key,
@@ -101,7 +111,9 @@ class ContentAgent:
                     refresh_token=c.tiktok_refresh_token,
                     token_file=c.tiktok_token_file,
                 )
-                publishers.append(TikTokPublisher(tokens, c.tiktok_privacy_level, disclosure=disclosure))
+                publishers.append(
+                    TikTokPublisher(tokens, c.tiktok_privacy_level, disclosure=disclosure, mode=c.tiktok_mode)
+                )
             elif platform == "facebook":
                 publishers.append(
                     FacebookPublisher(page_id=c.facebook_page_id, access_token=c.facebook_access_token,

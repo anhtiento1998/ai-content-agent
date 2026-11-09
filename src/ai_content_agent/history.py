@@ -2,9 +2,14 @@
 publish log (with takedowns), stage error log, and dashboard statistics.
 
 A run is recorded when its video is rendered (dry runs excepted), together
-with the script and target platforms, so it can be approved, published,
-retried on failed platforms or taken down later without re-rendering.
-Run status: pending_review → (rejected | published | partial | failed).
+with the script, target platforms, variation and provenance, so it can be
+approved, published, retried on failed platforms or taken down later without
+re-rendering. Run status: pending_review → (rejected | published | partial | failed).
+
+Also kept here: the reviewer audit log (who approved/rejected/retried/took
+down what, and why), publish attempts (so an upload interrupted mid-flight is
+looked up on the platform instead of posted twice) and small key/value state
+such as the scheduler's last fire time.
 """
 
 from __future__ import annotations
@@ -53,7 +58,33 @@ CREATE TABLE IF NOT EXISTS errors (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS review_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    action TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    note TEXT,
+    platform TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS publish_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES runs(id),
+    platform TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs (topic);
+CREATE INDEX IF NOT EXISTS idx_review_log_run ON review_log (run_id);
+CREATE INDEX IF NOT EXISTS idx_attempts_run ON publish_attempts (run_id, platform);
 CREATE INDEX IF NOT EXISTS idx_publishes_run ON publishes (run_id);
 """
 
@@ -66,6 +97,10 @@ _MIGRATIONS = {
         "script_json": "TEXT",
         "thumbnail_path": "TEXT",
         "decided_at": "TEXT",
+        "variation_json": "TEXT",
+        "provenance_json": "TEXT",
+        "similarity": "REAL",
+        "similar_to": "INTEGER",
     },
     "publishes": {
         "status": "TEXT",
@@ -93,6 +128,15 @@ class PublishRecord:
 
 
 @dataclass
+class ReviewEntry:
+    action: str  # approve | reject | retry | takedown
+    actor: str
+    note: str | None
+    platform: str | None
+    created_at: str
+
+
+@dataclass
 class RunRecord:
     id: int
     topic: str
@@ -103,7 +147,12 @@ class RunRecord:
     platforms: list[str] = field(default_factory=list)
     thumbnail_path: str | None = None
     script: dict | None = None
+    variation: dict | None = None
+    provenance: dict | None = None
+    similarity: float | None = None
+    similar_to: int | None = None
     publishes: list[PublishRecord] = field(default_factory=list)
+    reviews: list[ReviewEntry] = field(default_factory=list)
 
     def script_result(self) -> ScriptResult:
         data = self.script or {}
@@ -126,18 +175,29 @@ class ErrorRecord:
     created_at: str
 
 
-_RUN_COLUMNS = "id, topic, title, video_path, created_at, status, platforms, thumbnail_path, script_json"
+_RUN_COLUMNS = (
+    "id, topic, title, video_path, created_at, status, platforms, thumbnail_path, script_json,"
+    " variation_json, provenance_json, similarity, similar_to"
+)
 _PUBLISH_COLUMNS = "run_id, platform, remote_id, url, created_at, status, deleted_at"
 
 
+def _json(value: str | None):
+    return json.loads(value) if value else None
+
+
 def _run_from_row(row) -> RunRecord:
-    *base, status, platforms, thumbnail, script_json = row
+    *base, status, platforms, thumbnail, script_json, variation, provenance, similarity, similar_to = row
     return RunRecord(
         *base,
         status=status,
         platforms=json.loads(platforms or "[]"),
         thumbnail_path=thumbnail,
-        script=json.loads(script_json) if script_json else None,
+        script=_json(script_json),
+        variation=_json(variation),
+        provenance=_json(provenance),
+        similarity=similarity,
+        similar_to=similar_to,
     )
 
 
@@ -191,17 +251,27 @@ class HistoryStore:
         *,
         status: str = PENDING,
         platforms: list[str] | None = None,
+        variation: dict | None = None,
+        provenance: dict | None = None,
+        similarity: float | None = None,
+        similar_to: int | None = None,
     ) -> int:
         script_json = json.dumps(
             {"title": script.title, "script": script.script, "hashtags": script.hashtags}, ensure_ascii=False
         )
+
+        def dump(value):
+            return json.dumps(value, ensure_ascii=False) if value is not None else None
+
         with closing(self._connect()) as conn:
             cursor = conn.execute(
-                "INSERT INTO runs (topic, title, video_path, created_at, status, platforms, script_json, thumbnail_path)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO runs (topic, title, video_path, created_at, status, platforms, script_json,"
+                " thumbnail_path, variation_json, provenance_json, similarity, similar_to)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._normalize(topic), script.title, video.file_path, _now(), status,
                     json.dumps(list(platforms or [])), script_json, video.thumbnail_path,
+                    dump(variation), dump(provenance), similarity, similar_to,
                 ),
             )
             conn.commit()
@@ -214,6 +284,7 @@ class HistoryStore:
                 return None
             run = _run_from_row(row)
             run.publishes = self._publishes_for(conn, [run.id])[run.id]
+            run.reviews = self._reviews_for(conn, [run.id])[run.id]
         return run
 
     def set_run_status(self, run_id: int, status: str) -> None:
@@ -235,9 +306,11 @@ class HistoryStore:
                 ).fetchall()
             ]
             if runs:
-                publishes = self._publishes_for(conn, [run.id for run in runs])
+                ids = [run.id for run in runs]
+                publishes, reviews = self._publishes_for(conn, ids), self._reviews_for(conn, ids)
                 for run in runs:
                     run.publishes = publishes[run.id]
+                    run.reviews = reviews[run.id]
         return runs
 
     def recent_runs(self, limit: int = 20) -> list[RunRecord]:
@@ -245,6 +318,97 @@ class HistoryStore:
 
     def pending_runs(self, limit: int = 50) -> list[RunRecord]:
         return self._runs_where("WHERE status = ?", (PENDING,), limit)
+
+    def recent_scripts(self, limit: int = 50) -> list[tuple[int, str]]:
+        """(run_id, narration) of recent non-rejected runs — the corpus new scripts are compared with."""
+
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, script_json FROM runs WHERE status != ? AND script_json IS NOT NULL"
+                " ORDER BY id DESC LIMIT ?",
+                (REJECTED, limit),
+            ).fetchall()
+        return [(run_id, (json.loads(data) or {}).get("script", "")) for run_id, data in rows]
+
+    def recent_variations(self, limit: int = 20) -> list[dict]:
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT variation_json FROM runs WHERE variation_json IS NOT NULL ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    # ---------- reviewer audit log ----------
+
+    @staticmethod
+    def _reviews_for(conn, run_ids: list[int]) -> dict[int, list[ReviewEntry]]:
+        result: dict[int, list[ReviewEntry]] = {run_id: [] for run_id in run_ids}
+        if run_ids:
+            placeholders = ",".join("?" * len(run_ids))
+            for run_id, *entry in conn.execute(
+                f"SELECT run_id, action, actor, note, platform, created_at FROM review_log"
+                f" WHERE run_id IN ({placeholders}) ORDER BY id",
+                run_ids,
+            ).fetchall():
+                result[run_id].append(ReviewEntry(*entry))
+        return result
+
+    def log_review(
+        self, run_id: int, action: str, actor: str, *, note: str | None = None, platform: str | None = None
+    ) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "INSERT INTO review_log (run_id, action, actor, note, platform, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, action, (actor or "unknown")[:80], (note or None) and note[:500], platform, _now()),
+            )
+            conn.commit()
+
+    # ---------- publish attempts (idempotent uploads) ----------
+
+    def begin_attempt(self, run_id: int, platform: str) -> int:
+        with closing(self._connect()) as conn:
+            cursor = conn.execute(
+                "INSERT INTO publish_attempts (run_id, platform, started_at) VALUES (?, ?, ?)",
+                (run_id, platform, _now()),
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    def finish_attempt(self, attempt_id: int, outcome: str) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "UPDATE publish_attempts SET finished_at = ?, outcome = ? WHERE id = ?", (_now(), outcome, attempt_id)
+            )
+            conn.commit()
+
+    def uncertain_attempt_since(self, run_id: int, platform: str) -> str | None:
+        """Start time of the earliest attempt since the last success that may have reached the
+        platform without us recording it (process died mid-upload, or the call errored after
+        sending the file). None when every earlier attempt is accounted for."""
+
+        with closing(self._connect()) as conn:
+            last_ok = conn.execute(
+                "SELECT MAX(id) FROM publish_attempts WHERE run_id = ? AND platform = ? AND outcome = 'ok'",
+                (run_id, platform),
+            ).fetchone()[0] or 0
+            row = conn.execute(
+                "SELECT MIN(started_at) FROM publish_attempts WHERE run_id = ? AND platform = ? AND id > ?"
+                " AND (outcome IS NULL OR outcome = 'error')",
+                (run_id, platform, last_ok),
+            ).fetchone()
+        return row[0] if row else None
+
+    # ---------- key/value state ----------
+
+    def get_meta(self, key: str) -> str | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                         (key, value))
+            conn.commit()
 
     # ---------- publishes ----------
 

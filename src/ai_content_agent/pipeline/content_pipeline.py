@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import FAILED, PARTIAL, PENDING, PUBLISHED, REJECTED, HistoryStore
 from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import ScriptResult, VideoResult
-from ai_content_agent.publishers.base import Publisher, PublishResult
+from ai_content_agent.publishers.base import PLATFORM_DAILY_LIMITS, Publisher, PublishRejected, PublishResult
 from ai_content_agent.studio import StudioStageError, VideoStudio
 from ai_content_agent.studio.studio import Progress
 
@@ -145,9 +146,12 @@ class ContentPipeline:
         outcome.published = self._publish(outcome.run_id, topic, script, video, report)
         return outcome
 
-    def publish_run(self, run_id: int, *, progress: Progress | None = None) -> RunOutcome:
+    def publish_run(
+        self, run_id: int, *, progress: Progress | None = None, actor: str | None = None, action: str = "approve"
+    ) -> RunOutcome:
         """Publish an already-rendered run to this pipeline's platforms (approve or retry).
-        Platforms the run is already live on are skipped, never re-posted."""
+        Platforms the run is already live on are skipped, never re-posted. With `actor`, the
+        decision is written to the reviewer audit log."""
 
         if self._history is None:
             raise ValueError("publish_run needs a HistoryStore")
@@ -163,16 +167,19 @@ class ContentPipeline:
         try:
             from ai_content_agent.media.ffmpeg import probe_video
 
-            video.duration_seconds = probe_video(video.file_path)[2]
+            video.width, video.height, video.duration_seconds = probe_video(video.file_path)
         except Exception:
             logger.warning("Could not read duration of %s", video.file_path, exc_info=True)
 
         targets = sorted(set(run.platforms) | set(self.publisher_names))
         self._history.set_run_platforms(run_id, targets)
+        if actor:
+            for platform in self.publisher_names:
+                self._history.log_review(run_id, action, actor, platform=platform)
         published = self._publish(run_id, run.topic, script, video, progress or _no_progress)
         return RunOutcome(script=script, video=video, published=published, run_id=run_id)
 
-    def takedown(self, run_id: int, platform: str) -> None:
+    def takedown(self, run_id: int, platform: str, *, actor: str | None = None, note: str | None = None) -> None:
         """Delete the run's live post on `platform` and mark it taken down."""
 
         if self._history is None:
@@ -185,6 +192,8 @@ class ContentPipeline:
             raise ValueError(f"No {platform} publisher configured")
         publisher.delete(record.remote_id)
         self._history.mark_taken_down(run_id, platform)
+        if actor:
+            self._history.log_review(run_id, "takedown", actor, note=note, platform=platform)
         logger.info("Took down run #%s on %s (%s)", run_id, platform, record.remote_id)
 
     def _publish(
@@ -201,25 +210,38 @@ class ContentPipeline:
                                              url=existing.url, status=existing.status))
                 report("publish", done, total)
                 continue
-            if self._over_daily_cap(publisher.name):
-                message = f"Daily cap of {self._max_posts_per_day} posts on {publisher.name} reached (MAX_POSTS_PER_DAY)"
-                logger.warning(message)
+            cap_message = self._daily_cap_message(publisher.name)
+            if cap_message:
+                logger.warning(cap_message)
                 if self._history:
-                    self._history.record_error(topic, "publish", message, run_id=run_id, platform=publisher.name)
+                    self._history.record_error(topic, "publish", cap_message, run_id=run_id, platform=publisher.name)
+                report("publish", done, total)
+                continue
+
+            tracked = self._history is not None and run_id is not None
+            recovered = self._recover_unrecorded(run_id, publisher, script) if tracked else None
+            if recovered:
+                results.append(recovered)
+                self._history.record_publish(run_id, recovered)
                 report("publish", done, total)
                 continue
 
             logger.info("Publishing to %s", publisher.name)
+            attempt = self._history.begin_attempt(run_id, publisher.name) if tracked else None
             try:
                 result = publisher.publish(video, script)
             except Exception as exc:
                 logger.exception("Publish to %s failed", publisher.name)
+                if attempt:
+                    # A refusal before upload cannot have left a copy behind; anything else might have.
+                    self._history.finish_attempt(attempt, "rejected" if isinstance(exc, PublishRejected) else "error")
                 self._record_error(topic, "publish", exc, run_id=run_id, platform=publisher.name)
                 report("publish", done, total)
                 continue
             results.append(result)
-            if self._history and run_id is not None:
+            if tracked:
                 self._history.record_publish(run_id, result)
+                self._history.finish_attempt(attempt, "ok")
             report("publish", done, total)
 
         if self._history and run_id is not None:
@@ -230,9 +252,32 @@ class ContentPipeline:
             self._history.set_run_status(run_id, status)
         return results
 
-    def _over_daily_cap(self, platform: str) -> bool:
-        return bool(
-            self._max_posts_per_day
-            and self._history
-            and self._history.publishes_in_last_day(platform) >= self._max_posts_per_day
-        )
+    def _recover_unrecorded(self, run_id: int, publisher: Publisher, script: ScriptResult) -> PublishResult | None:
+        """After an attempt whose outcome is unknown, ask the platform whether the post exists already."""
+
+        since = self._history.uncertain_attempt_since(run_id, publisher.name)
+        if not since:
+            return None
+        try:
+            found = publisher.find_existing(script, datetime.fromisoformat(since))
+        except Exception:
+            logger.warning("Could not check %s for an earlier upload of run #%s", publisher.name, run_id, exc_info=True)
+            return None
+        if found:
+            logger.info("Run #%s was already uploaded to %s (%s) — recording it instead of re-posting",
+                        run_id, publisher.name, found.remote_id)
+        return found
+
+    def _daily_cap_message(self, platform: str) -> str | None:
+        """Why `platform` cannot take another post right now, or None. MAX_POSTS_PER_DAY applies
+        on top of each platform's own hard limit."""
+
+        if not self._history:
+            return None
+        used = self._history.publishes_in_last_day(platform)
+        if self._max_posts_per_day and used >= self._max_posts_per_day:
+            return f"Daily cap of {self._max_posts_per_day} posts on {platform} reached (MAX_POSTS_PER_DAY)"
+        limit = PLATFORM_DAILY_LIMITS.get(platform)
+        if limit and used >= limit:
+            return f"{platform} allows at most {limit} API posts per 24 h — limit reached"
+        return None

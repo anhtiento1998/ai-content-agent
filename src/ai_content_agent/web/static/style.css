@@ -471,3 +471,11 @@ td.nowrap { white-space: nowrap; font-family: var(--mono); font-size: 0.8rem; co
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
   .nebula { animation: none; }
 }
+
+/* ---------- reviewer & audit log ---------- */
+.review-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+.reviewer { display: flex; align-items: center; gap: 8px; font: 600 0.72rem var(--mono); color: var(--muted); letter-spacing: 0.04em; text-transform: uppercase; }
+.reviewer input { width: 210px; max-width: 100%; text-transform: none; letter-spacing: normal; }
+.review-log { margin-top: 4px; font-size: 0.75rem; }
+.warn-note { color: var(--amber) !important; }
+@media (max-width: 560px) { .reviewer { width: 100%; } .reviewer input { flex: 1; width: auto; } }

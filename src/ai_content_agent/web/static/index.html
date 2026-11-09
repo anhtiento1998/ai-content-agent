@@ -113,7 +113,12 @@
 
     <section class="panel review-panel">
       <div class="panel-title"><span class="dot warn"></span>REVIEW QUEUE · duyệt trước khi phát sóng</div>
-      <h2>Chờ duyệt <span class="count-badge" id="review-count">0</span></h2>
+      <div class="review-head">
+        <h2>Chờ duyệt <span class="count-badge" id="review-count">0</span></h2>
+        <label class="reviewer">Người duyệt
+          <input id="reviewer" type="text" maxlength="60" placeholder="tên bạn (ghi vào nhật ký)" autocomplete="name">
+        </label>
+      </div>
       <div class="reviews" id="reviews"></div>
     </section>
 

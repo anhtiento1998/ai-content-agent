@@ -29,6 +29,8 @@ class VideoResult:
     duration_seconds: float | None = None
     thumbnail_path: str | None = None
     raw: dict | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 def parse_json_object(text: str) -> dict:

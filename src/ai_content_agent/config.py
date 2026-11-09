@@ -42,6 +42,7 @@ class Config:
     ai_disclosure: bool = True
     ai_disclosure_text: str = "Video có sử dụng AI"
     schedule_timezone: str = "Asia/Ho_Chi_Minh"
+    schedule_jitter_minutes: int = 15
 
     youtube_token_file: str = "youtube_token.json"
     youtube_client_secret_file: str = "client_secret.json"
@@ -52,6 +53,10 @@ class Config:
     tiktok_refresh_token: str | None = None
     tiktok_token_file: str = "tiktok_token.json"
     tiktok_privacy_level: str = "SELF_ONLY"
+    tiktok_mode: str = "direct"
+    tiktok_via: str = "api"
+    upload_post_api_key: str | None = None
+    upload_post_user: str | None = None
     facebook_page_id: str | None = None
     facebook_access_token: str | None = None
 
@@ -88,8 +93,8 @@ class Config:
 
         missing = "Chưa cấu hình trong .env"
 
-        def entry(ready: bool, note: str | None = None) -> dict:
-            return {"ready": ready, "note": None if ready else (note or missing)}
+        def entry(ready: bool, note: str | None = None, warning: str | None = None) -> dict:
+            return {"ready": ready, "note": None if ready else (note or missing), "warning": warning if ready else None}
 
         openai, google = bool(self.openai_api_key), bool(self.google_api_key)
         return {
@@ -121,14 +126,36 @@ class Config:
                     "Chạy `ai-content-agent youtube-auth` một lần để đăng nhập YouTube"
                     if Path(self.youtube_client_secret_file).exists()
                     else None,
+                    self._youtube_token_warning(),
                 ),
-                "tiktok": entry(
-                    bool(
-                        self.tiktok_access_token
-                        or (self.tiktok_client_key and self.tiktok_client_secret
-                            and (self.tiktok_refresh_token or Path(self.tiktok_token_file).exists()))
-                    )
-                ),
+                "tiktok": self._tiktok_status(entry),
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
             },
         }
+
+    def _youtube_token_warning(self) -> str | None:
+        from ai_content_agent.publishers.youtube_publisher import TESTING_TOKEN_DAYS, token_age_days
+
+        age = token_age_days(self.youtube_token_file)
+        # A token that survives past day 8 belongs to a published ("In production") app; stop warning.
+        if age is not None and TESTING_TOKEN_DAYS - 2 <= age < TESTING_TOKEN_DAYS + 1:
+            return (
+                f"Đăng nhập YouTube từ {age:.0f} ngày trước — nếu dự án Google Cloud còn ở chế độ Testing, "
+                f"token sẽ hết hạn sau {TESTING_TOKEN_DAYS} ngày. Chuyển sang In production hoặc chạy lại youtube-auth."
+            )
+        return None
+
+    def _tiktok_status(self, entry) -> dict:
+        if self.tiktok_via == "upload-post":
+            return entry(bool(self.upload_post_api_key and self.upload_post_user),
+                         "TIKTOK_VIA=upload-post cần UPLOAD_POST_API_KEY và UPLOAD_POST_USER")
+        ready = bool(
+            self.tiktok_access_token
+            or (self.tiktok_client_key and self.tiktok_client_secret
+                and (self.tiktok_refresh_token or Path(self.tiktok_token_file).exists()))
+        )
+        warning = None
+        if self.tiktok_mode == "direct" and self.tiktok_privacy_level == "SELF_ONLY":
+            warning = ("Đang đăng chế độ SELF_ONLY (chỉ mình bạn xem) — app chưa được TikTok duyệt chỉ đăng được "
+                       "chế độ này. Dùng TIKTOK_MODE=inbox hoặc TIKTOK_VIA=upload-post để đăng công khai.")
+        return entry(ready, None, warning)

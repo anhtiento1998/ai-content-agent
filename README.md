@@ -165,6 +165,13 @@ ai-content-agent history --limit 20
 ai-content-agent schedule "Chủ đề 1" "Chủ đề 2" --cron "0 9 * * *" --platform youtube
 ```
 
+Giờ trong `--cron` tính theo `SCHEDULE_TIMEZONE` (mặc định
+`Asia/Ho_Chi_Minh`). Mỗi lượt lệch ngẫu nhiên tối đa
+`SCHEDULE_JITTER_MINUTES` phút (mặc định 15) để không đăng đúng một phút mỗi
+ngày. Lượt bị lỡ vì máy ngủ **hoặc vì app đang tắt** sẽ được chạy bù khi app
+mở lại, nếu trễ không quá 6 giờ (thời điểm chạy gần nhất lưu trong
+`HISTORY_DB_PATH`).
+
 ## Duyệt trước khi đăng, đăng lại, gỡ bài
 
 Mặc định (`REQUIRE_APPROVAL=true`) video dựng xong **không tự đăng**: nó vào
@@ -177,7 +184,16 @@ người vận hành có kinh nghiệm đều giữ bước người duyệt.
   lên nền tảng chưa thành công, không dựng lại video, không đăng trùng.
 - **Gỡ bài**: nút *Gỡ* xóa bài trên YouTube/Facebook (TikTok không có API
   xóa — app báo để gỡ tay trong ứng dụng). Chủ đề đã gỡ được phép làm lại.
-- **Giới hạn**: `MAX_POSTS_PER_DAY` (mặc định 3 bài/nền tảng/24 h).
+- **Giới hạn**: `MAX_POSTS_PER_DAY` (mặc định 3 bài/nền tảng/24 h), cộng
+  giới hạn cứng của từng nền tảng: YouTube 100/ngày/project, TikTok 15,
+  Facebook 30 reels.
+- **Không đăng trùng khi mạng rớt**: trước mỗi lần upload app ghi một "lần
+  thử". Nếu lần thử trước không rõ kết quả (tắt app giữa chừng, mất phản
+  hồi), lần đăng lại sẽ tìm video cùng tiêu đề trên kênh YouTube trước rồi
+  mới upload.
+- **Nhật ký người duyệt**: ghi ai duyệt / từ chối / đăng lại / gỡ, lúc nào,
+  lý do. Trên dashboard điền ô *Người duyệt*; trên CLI dùng `--by` (mặc định
+  tên user máy) và `--reason`.
 - **Khai báo AI**: `AI_DISCLOSURE=true` đặt cờ `containsSyntheticMedia`
   (YouTube), `is_aigc` (TikTok) và ghi `AI_DISCLOSURE_TEXT` vào mô tả mọi
   nền tảng (Nghị định 142/2026 chấp nhận nhãn trong tiêu đề/mô tả).
@@ -188,9 +204,9 @@ CLI tương đương:
 ai-content-agent review                       # danh sách chờ duyệt
 ai-content-agent approve 12                   # duyệt & đăng lần chạy #12
 ai-content-agent approve 12 --platform youtube
-ai-content-agent reject 12
+ai-content-agent reject 12 --reason "sai số liệu"
 ai-content-agent publish 12                   # đăng lại nền tảng còn thiếu
-ai-content-agent takedown 12 --platform facebook
+ai-content-agent takedown 12 --platform facebook --by Lan --reason "khiếu nại"
 ```
 
 ## Dashboard web
@@ -290,10 +306,11 @@ thời điểm bắt đầu/độ dài từng cảnh.
    trên VPS thì xác thực ở máy bạn rồi copy file token lên.
 4. Trong Google Cloud, để màn hình OAuth consent ở trạng thái **In
    production** (chế độ *Testing* làm refresh token hết hạn sau 7 ngày →
-   lịch tự động gãy âm thầm). Từ 1/6/2026 upload có quota riêng, mặc định
-   100 video/ngày/project. `YOUTUBE_PRIVACY` chọn public / unlisted /
-   private; app đọc lại trạng thái thật sau khi upload vì cài đặt kênh có
-   thể ghi đè.
+   lịch tự động gãy âm thầm). Dashboard cảnh báo khi token được 5–7 ngày
+   tuổi, và nếu Google từ chối làm mới token thì lỗi ghi rõ nguyên nhân.
+   Từ 1/6/2026 upload có quota riêng, mặc định 100 video/ngày/project.
+   `YOUTUBE_PRIVACY` chọn public / unlisted / private; app đọc lại trạng
+   thái thật sau khi upload vì cài đặt kênh có thể ghi đè.
 
 ### TikTok
 1. Tạo app trên [TikTok for Developers](https://developers.tiktok.com/),
@@ -313,16 +330,31 @@ thời điểm bắt đầu/độ dài từng cảnh.
    chế độ riêng tư và độ dài cho phép, đặt `is_aigc`, và chờ TikTok xử lý
    xong để lấy link bài (nếu quá 3 phút thì ghi trạng thái "processing").
 
+**Đăng công khai khi app chưa được audit** — hai cách:
+
+- `TIKTOK_MODE=inbox` (cần quyền `video.upload`): video vào hộp thư nháp
+  của TikTok, bạn mở app TikTok, viết caption, chọn chế độ hiển thị và bấm
+  đăng. Mỗi video một lần chạm, nhưng không cần audit.
+- `TIKTOK_VIA=upload-post`: đăng qua dịch vụ trung gian trả phí
+  [Upload-Post](https://www.upload-post.com) (đã có app TikTok được audit).
+  Kết nối tài khoản TikTok trong dashboard Upload-Post dưới một tên profile,
+  rồi điền `UPLOAD_POST_API_KEY` và `UPLOAD_POST_USER`. App gửi
+  `privacy_level` và `is_aigc` theo SDK chính thức của Upload-Post; **chưa
+  thử với tài khoản thật** — kiểm tra vài bài đầu trong dashboard
+  Upload-Post. Bài được ghi trạng thái "processing" kèm request id.
+
 ### Facebook Page
 1. Tạo app trên [Meta for Developers](https://developers.facebook.com/).
-2. Lấy Page access token dài hạn có quyền `pages_manage_posts`,
-   `pages_read_engagement`, `pages_show_list` (token System User của
-   Business không phải đăng nhập lại mỗi 60 ngày), điền `FACEBOOK_PAGE_ID`
-   và `FACEBOOK_ACCESS_TOKEN`. Bản production cần App Review + Business
-   Verification.
-3. Video ≤ 90 giây được đăng dạng **Reels** (`/video_reels`, tối đa 30
-   reels/24 h/Page); dài hơn thì đăng thành video thường. Graph API không có
-   trường khai báo AI nên app ghi dòng `AI_DISCLOSURE_TEXT` vào mô tả.
+2. Lấy token có quyền `pages_manage_posts`, `pages_read_engagement`,
+   `pages_show_list`, điền `FACEBOOK_PAGE_ID` và `FACEBOOK_ACCESS_TOKEN`.
+   Có thể dán Page token, hoặc token **System User** của Business Manager
+   (không phải đăng nhập lại mỗi 60 ngày) — app tự đổi sang Page token của
+   Page đó. Bản production cần App Review + Business Verification.
+3. Video 3–90 giây, tối thiểu 540x960, được đăng dạng **Reels**
+   (`/video_reels`, tối đa 30 reels/24 h/Page); dài hơn thì đăng thành video
+   thường; ngắn hơn 3 giây hoặc độ phân giải thấp thì bị từ chối trước khi
+   upload. Graph API không có trường khai báo AI nên app ghi dòng
+   `AI_DISCLOSURE_TEXT` vào mô tả.
 
 ## Mở rộng thêm nền tảng/engine mới
 

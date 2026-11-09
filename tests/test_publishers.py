@@ -47,6 +47,9 @@ class Router:
     def put(self, url, **kwargs):
         return self._answer("PUT", url, kwargs)
 
+    def get(self, url, **kwargs):
+        return self._answer("GET", url, kwargs)
+
     def delete(self, url, **kwargs):
         return self._answer("DELETE", url, kwargs)
 
@@ -215,7 +218,7 @@ def test_facebook_long_video_falls_back_to_page_video(monkeypatch, video):
     result = FacebookPublisher("page", "token").publish(video, SCRIPT)
 
     assert result.url == "https://www.facebook.com/watch/?v=555"
-    assert "/page/videos" in fake.calls[0][1]
+    assert any("/page/videos" in url for method, url, _ in fake.calls if method == "POST")
 
 
 def test_facebook_graph_error_raises_with_api_message(monkeypatch, video):
@@ -229,7 +232,8 @@ def test_facebook_delete(monkeypatch):
     fake = Router({"graph.facebook.com": {"success": True}})
     monkeypatch.setattr(facebook_publisher, "requests", fake)
     FacebookPublisher("page", "token").delete("987")
-    assert fake.calls[0][0] == "DELETE" and fake.calls[0][1].endswith("/987")
+    deletes = [url for method, url, _ in fake.calls if method == "DELETE"]
+    assert len(deletes) == 1 and deletes[0].endswith("/987")
 
 
 # ---------- YouTube ----------

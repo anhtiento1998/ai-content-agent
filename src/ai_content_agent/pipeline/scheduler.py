@@ -9,8 +9,10 @@ to `scripts/run_once.py` and skip this module entirely.
 from __future__ import annotations
 
 import logging
+import random
 import threading
-from typing import Callable
+from datetime import datetime, timedelta, timezone as dt_timezone
+from typing import Callable, Protocol
 
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 
@@ -58,27 +60,99 @@ ALL_TOPICS_USED = (
 
 # A run missed because the machine slept or was busy still fires when it wakes, if within
 # this window; several missed runs collapse into one (APScheduler's default grace is 1 s).
+# Runs missed while the app was closed are caught up at the next start, within the same window,
+# using the last fire time stored in the history database.
 MISFIRE_GRACE_SECONDS = 6 * 3600
+LAST_FIRE_KEY = "schedule.last_fire"
 
 
-def _trigger(cron_expr: str, timezone: str | None):
+class ScheduleState(Protocol):
+    def get_meta(self, key: str) -> str | None: ...
+    def set_meta(self, key: str, value: str) -> None: ...
+
+
+def _trigger(cron_expr: str, timezone: str | None, jitter_seconds: int = 0):
     from apscheduler.triggers.cron import CronTrigger
 
-    return CronTrigger.from_crontab(cron_expr, timezone=timezone) if timezone else CronTrigger.from_crontab(cron_expr)
+    trigger = CronTrigger.from_crontab(cron_expr, timezone=timezone) if timezone else CronTrigger.from_crontab(cron_expr)
+    if jitter_seconds:
+        # Posting at exactly the same minute every day is a bot signal; spread each run.
+        trigger.jitter = jitter_seconds
+    return trigger
 
 
-def start_background(job: Callable[[], None], cron_expr: str, *, timezone: str | None = None):
+def missed_fire_time(
+    cron_expr: str, timezone: str | None, last_fire: datetime | None, now: datetime,
+    grace_seconds: int = MISFIRE_GRACE_SECONDS,
+) -> datetime | None:
+    """The latest scheduled time in (last_fire, now] that is at most `grace_seconds` old, or None.
+    Without a recorded last fire nothing counts as missed (first start)."""
+
+    if last_fire is None:
+        return None
+    trigger = _trigger(cron_expr, timezone)
+    start = max(last_fire, now - timedelta(seconds=grace_seconds))
+    due, fire = None, trigger.get_next_fire_time(None, start)
+    while fire is not None and fire <= now:
+        if fire > last_fire:
+            due = fire
+        fire = trigger.get_next_fire_time(fire, fire + timedelta(seconds=1))
+    return due
+
+
+def _with_state(job: Callable[[], None], state: ScheduleState | None) -> Callable[[], None]:
+    if state is None:
+        return job
+
+    def recorded() -> None:
+        state.set_meta(LAST_FIRE_KEY, datetime.now(dt_timezone.utc).isoformat())
+        job()
+
+    return recorded
+
+
+def _schedule(scheduler, job, cron_expr, timezone, state, jitter_seconds) -> None:
+    wrapped = _with_state(job, state)
+    scheduler.add_job(wrapped, _trigger(cron_expr, timezone, jitter_seconds), id="content-run",
+                      misfire_grace_time=MISFIRE_GRACE_SECONDS, coalesce=True)
+    if state is None:
+        return
+    now = datetime.now(dt_timezone.utc)
+    stored = state.get_meta(LAST_FIRE_KEY)
+    if stored is None:
+        state.set_meta(LAST_FIRE_KEY, now.isoformat())  # baseline: later downtime can be detected
+        return
+    due = missed_fire_time(cron_expr, timezone, datetime.fromisoformat(stored), now)
+    if due is not None:
+        logger.warning("Scheduled run at %s was missed while the app was closed — running it now", due.isoformat())
+        scheduler.add_job(wrapped, "date", run_date=now + timedelta(seconds=random.randint(5, 30)),
+                          id="content-catch-up", misfire_grace_time=MISFIRE_GRACE_SECONDS)
+
+
+def start_background(
+    job: Callable[[], None],
+    cron_expr: str,
+    *,
+    timezone: str | None = None,
+    state: ScheduleState | None = None,
+    jitter_seconds: int = 0,
+):
     from apscheduler.schedulers.background import BackgroundScheduler
 
     scheduler = BackgroundScheduler()
-    scheduler.add_job(job, _trigger(cron_expr, timezone), id="content-run",
-                      misfire_grace_time=MISFIRE_GRACE_SECONDS, coalesce=True)
+    _schedule(scheduler, job, cron_expr, timezone, state, jitter_seconds)
     scheduler.start()
     return scheduler
 
 
 def run_forever(
-    pipeline: ContentPipeline, topics: list[str], *, cron_expr: str = "0 9 * * *", timezone: str | None = None
+    pipeline: ContentPipeline,
+    topics: list[str],
+    *,
+    cron_expr: str = "0 9 * * *",
+    timezone: str | None = None,
+    state: ScheduleState | None = None,
+    jitter_seconds: int = 0,
 ) -> None:
     from apscheduler.schedulers.blocking import BlockingScheduler
 
@@ -96,6 +170,6 @@ def run_forever(
         except Exception:
             logger.exception("Scheduled run for topic=%r failed", topic)
 
-    scheduler.add_job(_job, _trigger(cron_expr, timezone), misfire_grace_time=MISFIRE_GRACE_SECONDS, coalesce=True)
+    _schedule(scheduler, _job, cron_expr, timezone, state, jitter_seconds)
     logger.info("Scheduler started with cron=%r (%s), %d topics queued", cron_expr, timezone or "local", len(topics))
     scheduler.start()

@@ -60,12 +60,17 @@ def main() -> None:
                            help="Override the run's platforms (repeatable)")
     reject_p = sub.add_parser("reject", help="Reject a pending run (it will not be published)")
     reject_p.add_argument("run_id", type=int)
+    reject_p.add_argument("--reason", default=None, help="Why — kept in the review log")
     publish_p = sub.add_parser("publish", help="Retry publishing a run; platforms it is already live on are skipped")
     publish_p.add_argument("run_id", type=int)
     publish_p.add_argument("--platform", action="append", dest="platforms", choices=list(PUBLISHERS))
     takedown_p = sub.add_parser("takedown", help="Delete a run's post from a platform")
     takedown_p.add_argument("run_id", type=int)
     takedown_p.add_argument("--platform", required=True, choices=list(PUBLISHERS))
+    takedown_p.add_argument("--reason", default=None, help="Why — kept in the review log")
+    for review_parser in (approve_p, reject_p, publish_p, takedown_p):
+        review_parser.add_argument("--by", dest="actor", default=None,
+                                   help="Reviewer name for the audit log (default: your OS user name)")
 
     capcut_p = sub.add_parser("capcut", help="Export a rendered run as an editable CapCut desktop draft")
     capcut_p.add_argument("work_dir", nargs="?", help="Run folder under OUTPUT_DIR (default: the latest run)")
@@ -118,8 +123,14 @@ def main() -> None:
     elif args.command == "schedule":
         from ai_content_agent.pipeline.scheduler import run_forever
 
+        from ai_content_agent.history import HistoryStore
+
         pipeline = agent.build_pipeline(args.platforms)
-        run_forever(pipeline, args.topics, cron_expr=args.cron, timezone=config.schedule_timezone)
+        run_forever(
+            pipeline, args.topics, cron_expr=args.cron, timezone=config.schedule_timezone,
+            state=HistoryStore(config.history_db_path),
+            jitter_seconds=max(0, config.schedule_jitter_minutes) * 60,
+        )
 
     elif args.command == "history":
         from ai_content_agent.history import HistoryStore
@@ -181,7 +192,16 @@ def _review_commands(args, agent: ContentAgent, config: Config) -> None:
             print("Nothing waiting for review.")
         for run in runs:
             print(f"#{run.id} [{run.created_at}] {run.title!r} -> {', '.join(run.platforms) or '-'}\n    {run.video_path}")
+            if run.similar_to:
+                print(f"    similar to run #{run.similar_to} ({run.similarity:.0%})")
         return
+
+    import getpass
+
+    try:
+        actor = args.actor or f"cli:{getpass.getuser()}"
+    except Exception:
+        actor = "cli"
 
     run = store.get_run(args.run_id)
     if run is None:
@@ -191,12 +211,15 @@ def _review_commands(args, agent: ContentAgent, config: Config) -> None:
         if run.status != PENDING:
             sys.exit(f"Run #{run.id} is {run.status}, not waiting for review")
         store.set_run_status(run.id, REJECTED)
+        store.log_review(run.id, "reject", actor, note=args.reason)
         print(f"Run #{run.id} rejected.")
         return
 
     if args.command == "takedown":
         try:
-            agent.build_pipeline([args.platform], publish_only=True).takedown(run.id, args.platform)
+            agent.build_pipeline([args.platform], publish_only=True).takedown(
+                run.id, args.platform, actor=actor, note=args.reason
+            )
         except (ValueError, NotImplementedError) as exc:
             sys.exit(f"Takedown failed: {exc}")
         print(f"Run #{run.id} taken down on {args.platform}.")
@@ -210,7 +233,9 @@ def _review_commands(args, agent: ContentAgent, config: Config) -> None:
     if not platforms:
         sys.exit("No platforms: pass --platform")
     try:
-        outcome = agent.build_pipeline(platforms, publish_only=True).publish_run(run.id)
+        outcome = agent.build_pipeline(platforms, publish_only=True).publish_run(
+            run.id, actor=actor, action="approve" if args.command == "approve" else "retry"
+        )
     except (ValueError, FileNotFoundError) as exc:
         sys.exit(f"Publish failed: {exc}")
     for result in outcome.published:

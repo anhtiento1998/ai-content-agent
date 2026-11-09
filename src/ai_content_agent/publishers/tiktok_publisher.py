@@ -9,8 +9,14 @@ Access tokens are short-lived (TikTok's docs variously say 2 h or 24 h), so
 TikTokTokens refreshes them with the refresh token, trusting each response's
 `expires_in`, and persists the rotated refresh token to TIKTOK_TOKEN_FILE.
 
-Flow: creator_info/query (required before posting) -> init -> PUT chunks ->
-poll status/fetch until PUBLISH_COMPLETE / FAILED.
+Direct Post flow: creator_info/query (required before posting) -> init ->
+PUT chunks -> poll status/fetch until PUBLISH_COMPLETE / FAILED.
+
+TIKTOK_MODE=inbox uses the Upload flow instead (scope `video.upload`): the
+video lands in the creator's TikTok inbox as a draft and they finish the
+post in the app — works for unaudited apps that want a public post, at the
+cost of one tap per video. For fully automatic public posts before an audit,
+use a relay (TIKTOK_VIA=upload-post, see upload_post_publisher.py).
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ from pathlib import Path
 
 import requests
 
-from .base import Disclosure, Publisher, PublishResult
+from .base import Disclosure, Publisher, PublishRejected, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
 _API_BASE = "https://open.tiktokapis.com/v2"
@@ -30,6 +36,7 @@ _MAX_SINGLE_CHUNK = 64 * 1024 * 1024
 _CHUNK_SIZE = 10 * 1024 * 1024
 _REFRESH_MARGIN = 300  # refresh this many seconds before expiry
 _TOKEN_INVALID = {"access_token_invalid", "token_expired"}
+MODES = ("direct", "inbox")
 
 
 def _chunk_plan(size: int) -> tuple[int, int]:
@@ -132,7 +139,11 @@ class TikTokPublisher(Publisher):
         disclosure: Disclosure | None = None,
         poll_interval: float = 15.0,
         poll_timeout: float = 180.0,
+        mode: str = "direct",
     ) -> None:
+        if mode not in MODES:
+            raise ValueError(f"TIKTOK_MODE must be one of {', '.join(MODES)}, got {mode!r}")
+        self._mode = mode
         self._tokens = tokens if isinstance(tokens, TikTokTokens) else TikTokTokens(access_token=tokens)
         self._privacy_level = privacy_level
         self._disclosure = disclosure or Disclosure()
@@ -159,36 +170,46 @@ class TikTokPublisher(Publisher):
         return resp.get("data", {}) or {}
 
     def publish(self, video: VideoResult, script: ScriptResult) -> PublishResult:
-        creator = self._call("/post/publish/creator_info/query/", {})
-        options = creator.get("privacy_level_options") or []
-        if options and self._privacy_level not in options:
-            raise RuntimeError(
-                f"TikTok account does not allow privacy {self._privacy_level!r}; allowed: {', '.join(options)} "
-                "(unaudited apps can only post SELF_ONLY)"
-            )
-        max_seconds = creator.get("max_video_post_duration_sec")
-        if max_seconds and video.duration_seconds and video.duration_seconds > max_seconds:
-            raise RuntimeError(f"Video is {video.duration_seconds:.0f}s; this TikTok account allows {max_seconds}s")
+        creator: dict = {}
+        if self._mode == "direct":
+            creator = self._call("/post/publish/creator_info/query/", {})
+            options = creator.get("privacy_level_options") or []
+            if options and self._privacy_level not in options:
+                raise PublishRejected(
+                    f"TikTok account does not allow privacy {self._privacy_level!r}; allowed: {', '.join(options)} "
+                    "(unaudited apps can only post SELF_ONLY — use TIKTOK_MODE=inbox or TIKTOK_VIA=upload-post "
+                    "for public posts before the audit)"
+                )
+            max_seconds = creator.get("max_video_post_duration_sec")
+            if max_seconds and video.duration_seconds and video.duration_seconds > max_seconds:
+                raise PublishRejected(
+                    f"Video is {video.duration_seconds:.0f}s; this TikTok account allows {max_seconds}s"
+                )
 
         size = os.path.getsize(video.file_path)
         chunk_size, chunk_count = _chunk_plan(size)
-        caption = self._disclosure.caption(f"{script.title} " + " ".join(f"#{h}" for h in script.hashtags))
-        init = self._call(
-            "/post/publish/video/init/",
-            {
-                "post_info": {
-                    "title": caption.strip()[:2200],
-                    "privacy_level": self._privacy_level,
-                    "is_aigc": self._disclosure.enabled,
+        source_info = {
+            "source": "FILE_UPLOAD",
+            "video_size": size,
+            "chunk_size": chunk_size,
+            "total_chunk_count": chunk_count,
+        }
+        if self._mode == "inbox":
+            # The creator writes the caption and picks privacy in the TikTok app.
+            init = self._call("/post/publish/inbox/video/init/", {"source_info": source_info})
+        else:
+            caption = self._disclosure.caption(f"{script.title} " + " ".join(f"#{h}" for h in script.hashtags))
+            init = self._call(
+                "/post/publish/video/init/",
+                {
+                    "post_info": {
+                        "title": caption.strip()[:2200],
+                        "privacy_level": self._privacy_level,
+                        "is_aigc": self._disclosure.enabled,
+                    },
+                    "source_info": source_info,
                 },
-                "source_info": {
-                    "source": "FILE_UPLOAD",
-                    "video_size": size,
-                    "chunk_size": chunk_size,
-                    "total_chunk_count": chunk_count,
-                },
-            },
-        )
+            )
         publish_id, upload_url = init.get("publish_id"), init.get("upload_url")
         if not publish_id or not upload_url:
             raise RuntimeError(f"TikTok init returned no publish_id/upload_url: {init}")
@@ -224,6 +245,8 @@ class TikTokPublisher(Publisher):
             if status == "PUBLISH_COMPLETE":
                 ids = data.get("publicaly_available_post_id") or []  # sic — TikTok's field name
                 return "published", str(ids[0]) if ids else None
+            if status == "SEND_TO_USER_INBOX":
+                return "inbox", None  # waiting for the creator to finish the post in the TikTok app
             if status == "FAILED":
                 raise RuntimeError(f"TikTok rejected the post: {data.get('fail_reason', 'unknown reason')}")
             if time.monotonic() >= deadline:

@@ -60,7 +60,10 @@ def serve(
             cron=cron,
             platforms=list(platforms or []),
             rotation=rotation,
-            scheduler=start_background(_scheduled, cron, timezone=config.schedule_timezone),
+            scheduler=start_background(
+                _scheduled, cron, timezone=config.schedule_timezone, state=history,
+                jitter_seconds=max(0, config.schedule_jitter_minutes) * 60,
+            ),
             skip=recently_published,
         )
 

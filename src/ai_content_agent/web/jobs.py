@@ -55,6 +55,7 @@ class Job:
     stage_done: int = 0
     stage_total: int = 0
     capcut_draft: str | None = None
+    actor: str | None = None
 
 
 class JobManager:
@@ -91,12 +92,15 @@ class JobManager:
             dry_run=dry_run, force=force, source=source,
         ))
 
-    def submit_publish(self, run_id: int, topic: str, platforms: list[str], *, source: str = "review") -> Job:
-        """Publish an already-rendered run (approve from the review queue, or retry failed platforms)."""
+    def submit_publish(
+        self, run_id: int, topic: str, platforms: list[str], *, source: str = "review", actor: str | None = None
+    ) -> Job:
+        """Publish an already-rendered run (approve from the review queue, or retry failed platforms).
+        `source` review|retry is logged with `actor` in the reviewer audit log."""
 
         return self._enqueue(Job(
             id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style="", dry_run=False,
-            force=False, source=source, kind="publish", run_id=run_id,
+            force=False, source=source, kind="publish", run_id=run_id, actor=actor,
         ))
 
     def _evict_finished(self) -> None:
@@ -123,7 +127,10 @@ class JobManager:
                 raise
 
             if job.kind == "publish":
-                outcome = pipeline.publish_run(job.run_id, progress=progress)
+                outcome = pipeline.publish_run(
+                    job.run_id, progress=progress, actor=job.actor,
+                    action="approve" if job.source == "review" else "retry",
+                )
             else:
                 outcome = pipeline.run(
                     job.topic, style=job.style, dry_run=job.dry_run, force=job.force, progress=progress

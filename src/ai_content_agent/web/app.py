@@ -55,12 +55,25 @@ class RunRequest(BaseModel):
         return self
 
 
-class PublishRequest(BaseModel):
+class ReviewerMixin(BaseModel):
+    reviewer: str = Field("", max_length=60)
+
+    def actor(self) -> str:
+        name = " ".join(self.reviewer.split())
+        return f"dashboard:{name}" if name else "dashboard"
+
+
+class PublishRequest(ReviewerMixin):
     platforms: list[Platform] = Field(default_factory=list)
 
 
-class TakedownRequest(BaseModel):
+class RejectRequest(ReviewerMixin):
+    reason: str = Field("", max_length=500)
+
+
+class TakedownRequest(ReviewerMixin):
     platform: Platform
+    reason: str = Field("", max_length=500)
 
 
 @dataclass
@@ -140,17 +153,20 @@ def create_app(
         run = _run_or_404(run_id)
         if run.status != PENDING:
             raise HTTPException(status_code=409, detail=f"Run is {run.status}, not waiting for review")
-        platforms = list(dict.fromkeys((body.platforms if body else None) or run.platforms))
+        body = body or PublishRequest()
+        platforms = list(dict.fromkeys(body.platforms or run.platforms))
         if not platforms:
             raise HTTPException(status_code=422, detail="choose at least one platform")
-        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="review"))
+        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="review", actor=body.actor()))
 
     @api.post("/runs/{run_id}/reject")
-    def reject(run_id: int) -> dict:
+    def reject(run_id: int, body: RejectRequest | None = None) -> dict:
+        body = body or RejectRequest()
         run = _run_or_404(run_id)
         if run.status != PENDING:
             raise HTTPException(status_code=409, detail=f"Run is {run.status}, not waiting for review")
         history.set_run_status(run.id, REJECTED)
+        history.log_review(run.id, "reject", body.actor(), note=body.reason.strip() or None)
         return {"status": REJECTED}
 
     @api.post("/runs/{run_id}/publish", status_code=202)
@@ -163,7 +179,7 @@ def create_app(
         platforms = list(dict.fromkeys(body.platforms or run.platforms))
         if not platforms:
             raise HTTPException(status_code=422, detail="choose at least one platform")
-        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="retry"))
+        return asdict(jobs.submit_publish(run.id, run.topic, platforms, source="retry", actor=body.actor()))
 
     @api.post("/runs/{run_id}/takedown")
     def takedown(run_id: int, body: TakedownRequest) -> dict:
@@ -171,7 +187,9 @@ def create_app(
         if pipeline_factory is None:
             raise HTTPException(status_code=501, detail="Takedown is not available on this server")
         try:
-            pipeline_factory([body.platform], publish_only=True).takedown(run.id, body.platform)
+            pipeline_factory([body.platform], publish_only=True).takedown(
+                run.id, body.platform, actor=body.actor(), note=body.reason.strip() or None
+            )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except NotImplementedError as exc:
