@@ -13,6 +13,7 @@ from .base import (
     VideoResult,
     VoiceGenerator,
 )
+from .comfyui_provider import ComfyUIImageProvider, ComfyUIVideoProvider
 from .google_provider import GeminiProvider, GeminiVoiceProvider, ImagenProvider, VeoProvider
 from .local_provider import CardImageProvider, SilentVoiceProvider
 from .local_tts import VieNeuVoiceProvider, ZeroTTSVoiceProvider
@@ -32,6 +33,8 @@ VISUAL_PROVIDERS = {
     "gpt-image": OpenAIImageProvider,
     "imagen": ImagenProvider,
     "veo": VeoProvider,
+    "comfyui": ComfyUIImageProvider,
+    "comfyui-video": ComfyUIVideoProvider,
     "muse": MetaMuseVideoProvider,
 }
 
@@ -61,6 +64,8 @@ __all__ = [
     "MuseSparkProvider",
     "MetaMuseVideoProvider",
     "CardImageProvider",
+    "ComfyUIImageProvider",
+    "ComfyUIVideoProvider",
     "SilentVoiceProvider",
     "VieNeuVoiceProvider",
     "ZeroTTSVoiceProvider",

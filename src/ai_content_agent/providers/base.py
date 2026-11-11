@@ -53,6 +53,8 @@ class TextGenerator(ABC):
     """LLM used to write storyboards (GPT, Claude, Gemini, Muse Spark, ...)."""
 
     name: str
+    # Set by complete(): {"model", "input_tokens", "output_tokens"} of the last call, for cost metering.
+    last_usage: dict | None = None
 
     @abstractmethod
     def complete(self, prompt: str) -> str:

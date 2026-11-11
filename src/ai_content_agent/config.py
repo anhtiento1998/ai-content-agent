@@ -31,9 +31,14 @@ class Config:
     visual_model: str | None = None
     voice_model: str | None = None
     voice_name: str | None = None
+    comfyui_url: str = "http://127.0.0.1:8188"
+    comfyui_workflow: str | None = None
     vieneu_base_url: str = "http://127.0.0.1:8000/v1"
     vieneu_api_key: str | None = None
     video_encoder: str = "auto"
+    pricing_file: str | None = None
+    daily_budget_usd: str | None = None
+    usd_vnd_rate: int = 0
 
     content_language: str = "vi"
     target_seconds: int = 40
@@ -88,6 +93,7 @@ class Config:
     make_thumbnails: bool = True
 
     dashboard_token: str | None = None
+    mcp_allow_publish: bool = False
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -135,6 +141,8 @@ class Config:
                 "gpt-image": entry(openai),
                 "imagen": entry(google),
                 "veo": entry(google),
+                "comfyui": entry(bool(self.comfyui_workflow), "Cần COMFYUI_WORKFLOW (file workflow xuất dạng API)"),
+                "comfyui-video": entry(bool(self.comfyui_workflow), "Cần COMFYUI_WORKFLOW (file workflow xuất dạng API)"),
                 "muse": entry(False, "Meta chưa mở API cho Muse Video"),
             },
             "voice_providers": {
@@ -146,6 +154,7 @@ class Config:
             },
             "capcut": capcut_status(self.capcut_drafts_dir, self.capcut_version),
             "encoder": self._encoder_status(),
+            "costs": {"daily_budget_usd": self.budget(), "usd_vnd_rate": self.usd_vnd_rate},
             "music": self._music_status(),
             "captions": {"style": self.caption_style, "aligner": self.caption_aligner, "font": self.subtitle_font},
             "platforms": {
@@ -160,6 +169,19 @@ class Config:
                 "facebook": entry(bool(self.facebook_page_id and self.facebook_access_token)),
             },
         }
+
+    def budget(self) -> float:
+        """DAILY_BUDGET_USD as a number (0 = no cap)."""
+
+        if not self.daily_budget_usd:
+            return 0.0
+        try:
+            value = float(self.daily_budget_usd.replace(",", "."))
+        except ValueError as exc:
+            raise ValueError(f"DAILY_BUDGET_USD must be a number, got {self.daily_budget_usd!r}") from exc
+        if value < 0:
+            raise ValueError("DAILY_BUDGET_USD must not be negative")
+        return value
 
     def _encoder_status(self) -> dict:
         from ai_content_agent.media.encoders import status

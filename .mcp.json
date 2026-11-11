@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ai-content-agent": {
+      "command": "ai-content-agent",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 BACKOFF_SECONDS = 60
+BUDGET_WAIT_SECONDS = 3600  # an item stopped by DAILY_BUDGET_USD is tried again after this long
 MAX_ITEMS = 500
 
 QUEUED, RUNNING, DONE, REVIEW, SKIPPED, FAILED = "queued", "running", "done", "review", "skipped", "failed"
@@ -338,7 +339,10 @@ class BatchRunner:
         except Exception as exc:
             cause = exc.__cause__ if isinstance(exc, StudioStageError) and exc.__cause__ else exc
             message = str(exc) if isinstance(exc, StudioStageError) else f"{type(exc).__name__}: {exc}"
-            if _is_transient(cause) and item.attempts < self._max_attempts:
+            if isinstance(exc, StudioStageError) and exc.stage == "budget":
+                logger.warning("Batch item #%s waits an hour: %s", item.id, message)
+                self.store.finish(item, QUEUED, error=message, retry_in=BUDGET_WAIT_SECONDS)
+            elif _is_transient(cause) and item.attempts < self._max_attempts:
                 delay = self._backoff * 2 ** (item.attempts - 1)
                 logger.warning("Batch item #%s hit a transient error (%s); retrying in %.0fs", item.id, message, delay)
                 self.store.finish(item, QUEUED, error=message, retry_in=delay)

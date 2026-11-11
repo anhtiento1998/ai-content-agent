@@ -95,6 +95,8 @@ def main() -> None:
     capcut_p.add_argument("--force", action="store_true",
                           help="Write even if CapCut is running or newer than 9.x (may corrupt nothing, but may not open)")
 
+    sub.add_parser("mcp", help="Run the MCP server on stdio so Claude Code / Claude Desktop can drive the agent")
+
     dash_p = sub.add_parser("dashboard", help="Start the web dashboard")
     dash_p.add_argument("--host", default="127.0.0.1")
     dash_p.add_argument("--port", type=int, default=8000)
@@ -211,6 +213,14 @@ def main() -> None:
             )
         authorize(config.youtube_token_file, config.youtube_client_secret_file)
         print(f"YouTube token saved to {config.youtube_token_file}")
+
+    elif args.command == "mcp":
+        from ai_content_agent.mcp_server import main as mcp_main
+
+        try:
+            mcp_main(config)
+        except RuntimeError as exc:
+            sys.exit(str(exc))
 
     elif args.command == "dashboard":
         from ai_content_agent.web.server import serve

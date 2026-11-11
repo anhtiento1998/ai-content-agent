@@ -59,6 +59,8 @@ class Job:
     capcut_draft: str | None = None
     actor: str | None = None
     batch_id: int | None = None
+    cost_usd: float | None = None
+    cost_complete: bool = True
 
 
 class JobManager:
@@ -168,6 +170,8 @@ class JobManager:
             job.status = "failed"
             job.failed_stage = exc.stage
             job.error = str(exc)
+            if exc.cost and exc.cost.get("items"):
+                job.cost_usd, job.cost_complete = exc.cost["usd"], exc.cost["complete"]
         except Exception as exc:
             logger.exception("Job %s failed", job.id)
             job.status = "failed"
@@ -183,6 +187,8 @@ class JobManager:
             job.error = "Topic này đã được đăng hoặc đang chờ duyệt — bật “Đăng lại” để bỏ qua kiểm tra trùng."
             return
         job.run_id = outcome.run_id or job.run_id
+        if outcome.cost:
+            job.cost_usd, job.cost_complete = outcome.cost["usd"], outcome.cost["complete"]
         job.video_path = outcome.video.file_path if outcome.video else None
         job.capcut_draft = outcome.capcut_draft
         job.results = [

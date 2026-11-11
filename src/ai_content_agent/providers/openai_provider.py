@@ -23,6 +23,13 @@ class OpenAIProvider(TextGenerator):
         response = self._client.chat.completions.create(
             model=self._model, messages=[{"role": "user", "content": prompt}]
         )
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            self.last_usage = {
+                "model": getattr(response, "model", None) or self._model,
+                "input_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+                "output_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            }
         return response.choices[0].message.content
 
 

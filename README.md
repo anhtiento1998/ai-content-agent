@@ -78,6 +78,7 @@ xác nhận.
 | Kịch bản — Muse Spark (Meta) | `TEXT_PROVIDER=muse`, `META_MODEL_API_KEY` + `META_MODEL_API_BASE_URL` (lấy từ [dev.meta.ai/docs](https://dev.meta.ai/docs)). Meta Model API đang public preview, chỉ developer ở Mỹ | chưa |
 | Hình ảnh — Imagen / GPT image | `VISUAL_PROVIDER=imagen\|gpt-image` | chưa (cần key) |
 | Hình ảnh — Veo (clip mỗi cảnh) | `VISUAL_PROVIDER=veo` — **đắt nhất**: 1 lần gọi Veo cho mỗi cảnh | phần cắt/lặp clip: có; gọi Veo thật: chưa |
+| Hình ảnh / clip — ComfyUI (model chạy trên máy) | `VISUAL_PROVIDER=comfyui` hoặc `comfyui-video` + file workflow của bạn (Wan 2.2, FramePack, Flux…) | HTTP giả lập: có; ComfyUI thật: chưa |
 | Hình ảnh — nền màu offline | `VISUAL_PROVIDER=card` — không cần API, để xem thử bố cục | có |
 | Hình ảnh — Muse Video (Meta) | **chưa có** — tính đến 10/2026 Meta chưa mở API. Chọn `muse` sẽ báo lỗi ngay khi khởi tạo (không tốn tiền viết kịch bản trước) | — |
 | Giọng đọc — Gemini / GPT TTS | `VOICE_PROVIDER=gemini\|gpt`, chọn giọng qua `VOICE_NAME` | chưa (cần key) |
@@ -98,6 +99,73 @@ xác nhận.
 — cần tạo API key và nạp credit ở trang developer của từng hãng. Một video
 40 giây ≈ 1 lần gọi kịch bản + 4–8 ảnh (hoặc 4–8 clip Veo) + 4–8 lần đọc
 giọng.
+
+## Chi phí từng video và hạn mức chi tiêu
+
+Mỗi video được tính chi phí engine AI theo mức dùng thật: số token mà API
+báo về (kịch bản), số ảnh, số giây clip, số phút giọng đọc. Engine chạy trên
+máy (card, silent, vieneu, zerotts, comfyui) tính 0. Chi phí hiện trên thẻ
+tiến trình, thẻ Chờ duyệt (rê chuột để xem từng engine) và ô thống kê; lưu
+trong `provenance.json` và lịch sử — kể cả lần chạy thử và lần dựng lỗi giữa
+chừng.
+
+- **Bảng giá** (USD) nằm trong `src/ai_content_agent/costs.py`. Giá Claude
+  là giá niêm yết của Anthropic ngày 3/11/2026. Giá OpenAI và Google là giá
+  niêm yết tôi biết tới thời điểm viết, **chưa đối chiếu lại được** — hãy
+  sửa bằng file JSON và trỏ `PRICING_FILE` tới đó (mẫu ở đầu `costs.py`).
+  Model chưa có giá hiện "+?" thay vì đoán.
+- Con số là **ước tính theo giá niêm yết**, không phải hoá đơn (chưa trừ
+  giảm giá cache/batch, chưa tính thuế).
+- `DAILY_BUDGET_USD=5`: khi 24 giờ qua đã tiêu tới mức này, app từ chối dựng
+  video mới (lỗi giai đoạn "Hạn mức chi tiêu"); mục trong lô thì tự chờ 1
+  giờ rồi thử lại, không bị đánh lỗi.
+- `USD_VND_RATE=26000`: hiện thêm số tiền quy đổi ra đồng.
+
+## Hình/clip từ model chạy trên máy (ComfyUI)
+
+Chạy Wan 2.2, FramePack, Flux… trên card đồ hoạ của bạn, không tốn phí API:
+
+1. Dựng workflow chạy được trong ComfyUI, rồi xuất bằng **Save (API
+   Format)**.
+2. Trong file JSON đó, đặt các chỗ giữ chỗ: `{{prompt}}` trong ô mô tả
+   (prompt dương), `{{seed}}` làm giá trị seed, `{{width}}` / `{{height}}`
+   làm kích thước khung.
+3. `.env`: `VISUAL_PROVIDER=comfyui` (workflow ra **ảnh**, app tự zoom chậm)
+   hoặc `comfyui-video` (workflow ra **clip**), `COMFYUI_WORKFLOW=đường dẫn
+   file`, và `COMFYUI_URL` nếu ComfyUI không ở `http://127.0.0.1:8188`.
+
+App tạo từng cảnh một (card đồ hoạ không chạy 2 model video cùng lúc), chờ
+tối đa 30 phút mỗi cảnh. Không kèm sẵn workflow nào vì chúng phụ thuộc model
+và node bạn đã cài.
+
+## Cho Claude điều khiển app (MCP server)
+
+```bash
+pip install -e ".[mcp]"
+ai-content-agent mcp          # server MCP qua stdio
+```
+
+- **Claude Code**: repo có sẵn `.mcp.json` và skill
+  `.claude/skills/video-factory/` — mở Claude Code trong thư mục dự án (đã
+  kích hoạt venv), chấp nhận server `ai-content-agent`, rồi nói ví dụ "làm 3
+  video về mẹo tiết kiệm điện cho YouTube".
+- **Claude Desktop**: thêm vào file cấu hình MCP của app
+  `{"mcpServers": {"ai-content-agent": {"command": "<đường dẫn đầy đủ tới
+  ai-content-agent>", "args": ["mcp"]}}}` và đặt thư mục làm việc là thư mục
+  dự án (nơi có `.env`).
+
+17 công cụ: `status`, `produce_video`, `job_status`, `list_jobs`,
+`create_batch`, `list_batches`, `batch_control`, `review_queue`, `get_run`,
+`recent_runs`, `recent_errors`, `reject_run`, `export_edit_bundle`,
+`export_capcut`, và ba công cụ đăng bài `approve_run`, `retry_publish`,
+`takedown`.
+
+**An toàn:** mặc định agent **không được đăng bài** — ba công cụ đăng bài trả
+lỗi cho tới khi bạn đặt `MCP_ALLOW_PUBLISH=true`, và nếu
+`REQUIRE_APPROVAL=false` thì agent cũng không được dựng video để đăng (chỉ
+được chạy thử). Agent viết, dựng **và** đăng mà không ai xem chính là kiểu
+"sản xuất hàng loạt tự động" các nền tảng đang phạt. Mọi thao tác của agent
+được ghi vào nhật ký người duyệt với tên `mcp:...`.
 
 ## Giọng đọc chạy trên máy (miễn phí)
 
@@ -566,6 +634,8 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] **Bước 1 — Studio tự động:** kịch bản chia cảnh, hình/clip + giọng
       đọc mỗi cảnh, phụ đề, nhạc nền, logo, xuất MP4.
 - [ ] **Bước 2 — App desktop Windows** (file cài `.exe`) — tạm hoãn theo yêu cầu, bạn tự đóng gói khi cần.
+- [x] P3: MCP server + skill Claude Code, chi phí từng video + hạn mức ngày, ComfyUI (Wan 2.2/FramePack chạy trên máy).
+- [ ] Engine avatar người nói (HeyGen, D-ID…) — chưa làm, cần chọn dịch vụ trả phí.
 - [x] P2: CapCut 9.x (dò phiên bản, khuôn từ app, chặn 10.x), gói dựng FCPXML, TTS tiếng Việt chạy trên máy, tự dò NVENC.
 - [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
 - [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).

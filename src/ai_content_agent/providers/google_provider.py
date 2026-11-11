@@ -23,7 +23,17 @@ class GeminiProvider(TextGenerator):
         self._model = model
 
     def complete(self, prompt: str) -> str:
-        return self._client.models.generate_content(model=self._model, contents=prompt).text
+        response = self._client.models.generate_content(model=self._model, contents=prompt)
+        usage = getattr(response, "usage_metadata", None)
+        if usage is not None:
+            self.last_usage = {
+                "model": self._model,
+                "input_tokens": getattr(usage, "prompt_token_count", 0) or 0,
+                # Thinking tokens are billed as output.
+                "output_tokens": (getattr(usage, "candidates_token_count", 0) or 0)
+                + (getattr(usage, "thoughts_token_count", 0) or 0),
+            }
+        return response.text
 
 
 class ImagenProvider(ImageGenerator):

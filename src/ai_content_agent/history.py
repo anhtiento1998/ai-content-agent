@@ -77,6 +77,16 @@ CREATE TABLE IF NOT EXISTS publish_attempts (
     outcome TEXT
 );
 
+CREATE TABLE IF NOT EXISTS costs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER REFERENCES runs(id),
+    topic TEXT NOT NULL,
+    usd REAL NOT NULL,
+    complete INTEGER NOT NULL DEFAULT 1,
+    detail TEXT,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -101,6 +111,7 @@ _MIGRATIONS = {
         "provenance_json": "TEXT",
         "similarity": "REAL",
         "similar_to": "INTEGER",
+        "cost_usd": "REAL",
     },
     "publishes": {
         "status": "TEXT",
@@ -151,6 +162,7 @@ class RunRecord:
     provenance: dict | None = None
     similarity: float | None = None
     similar_to: int | None = None
+    cost_usd: float | None = None
     publishes: list[PublishRecord] = field(default_factory=list)
     reviews: list[ReviewEntry] = field(default_factory=list)
 
@@ -177,7 +189,7 @@ class ErrorRecord:
 
 _RUN_COLUMNS = (
     "id, topic, title, video_path, created_at, status, platforms, thumbnail_path, script_json,"
-    " variation_json, provenance_json, similarity, similar_to"
+    " variation_json, provenance_json, similarity, similar_to, cost_usd"
 )
 _PUBLISH_COLUMNS = "run_id, platform, remote_id, url, created_at, status, deleted_at"
 
@@ -187,7 +199,7 @@ def _json(value: str | None):
 
 
 def _run_from_row(row) -> RunRecord:
-    *base, status, platforms, thumbnail, script_json, variation, provenance, similarity, similar_to = row
+    *base, status, platforms, thumbnail, script_json, variation, provenance, similarity, similar_to, cost = row
     return RunRecord(
         *base,
         status=status,
@@ -198,6 +210,7 @@ def _run_from_row(row) -> RunRecord:
         provenance=_json(provenance),
         similarity=similarity,
         similar_to=similar_to,
+        cost_usd=cost,
     )
 
 
@@ -255,6 +268,7 @@ class HistoryStore:
         provenance: dict | None = None,
         similarity: float | None = None,
         similar_to: int | None = None,
+        cost_usd: float | None = None,
     ) -> int:
         script_json = json.dumps(
             {"title": script.title, "script": script.script, "hashtags": script.hashtags}, ensure_ascii=False
@@ -266,12 +280,12 @@ class HistoryStore:
         with closing(self._connect()) as conn:
             cursor = conn.execute(
                 "INSERT INTO runs (topic, title, video_path, created_at, status, platforms, script_json,"
-                " thumbnail_path, variation_json, provenance_json, similarity, similar_to)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " thumbnail_path, variation_json, provenance_json, similarity, similar_to, cost_usd)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     self._normalize(topic), script.title, video.file_path, _now(), status,
                     json.dumps(list(platforms or [])), script_json, video.thumbnail_path,
-                    dump(variation), dump(provenance), similarity, similar_to,
+                    dump(variation), dump(provenance), similarity, similar_to, cost_usd,
                 ),
             )
             conn.commit()
@@ -397,6 +411,27 @@ class HistoryStore:
             ).fetchone()
         return row[0] if row else None
 
+    # ---------- costs ----------
+
+    def record_cost(self, topic: str, cost: dict | None, *, run_id: int | None = None) -> None:
+        """Log what one produce attempt spent — also dry runs and runs that failed mid-way."""
+
+        if not cost or not cost.get("items"):
+            return
+        with closing(self._connect()) as conn:
+            conn.execute(
+                "INSERT INTO costs (run_id, topic, usd, complete, detail, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, self._normalize(topic), float(cost.get("usd") or 0.0), int(bool(cost.get("complete", True))),
+                 json.dumps(cost, ensure_ascii=False), _now()),
+            )
+            conn.commit()
+
+    def cost_since(self, hours: float) -> float:
+        with closing(self._connect()) as conn:
+            total = conn.execute("SELECT COALESCE(SUM(usd), 0) FROM costs WHERE created_at >= ?",
+                                 (_since(hours),)).fetchone()[0]
+        return round(float(total), 4)
+
     # ---------- key/value state ----------
 
     def get_meta(self, key: str) -> str | None:
@@ -487,7 +522,12 @@ class HistoryStore:
             )
             errors_7d = conn.execute("SELECT COUNT(*) FROM errors WHERE created_at >= ?", (_since(24 * 7),)).fetchone()[0]
             last_run_at = conn.execute("SELECT MAX(created_at) FROM runs").fetchone()[0]
+            unpriced = conn.execute("SELECT COUNT(*) FROM costs WHERE complete = 0 AND created_at >= ?",
+                                    (_since(24 * 30),)).fetchone()[0]
         return {
+            "cost_24h_usd": self.cost_since(24),
+            "cost_30d_usd": self.cost_since(24 * 30),
+            "cost_unpriced_runs_30d": unpriced,
             "total_runs": total_runs,
             "pending_review": pending,
             "total_publishes": sum(by_platform.values()),

@@ -54,6 +54,8 @@ class ContentAgent:
             "gpt-image": {"api_key": c.openai_api_key},
             "imagen": {"api_key": c.google_api_key},
             "veo": {"api_key": c.google_api_key},
+            "comfyui": {"workflow": c.comfyui_workflow, "url": c.comfyui_url},
+            "comfyui-video": {"workflow": c.comfyui_workflow, "url": c.comfyui_url},
         }
         return _build("VISUAL_PROVIDER", VISUAL_PROVIDERS, c.visual_provider, credentials, {"model": c.visual_model})
 
@@ -87,6 +89,7 @@ class ContentAgent:
                 ai_label=c.ai_disclosure_text if c.ai_disclosure and c.ai_label_overlay else None,
                 require_music_license=c.require_music_license,
                 video_encoder=c.video_encoder,
+                pricing_file=c.pricing_file,
                 keep_intermediates=c.keep_intermediates,
             ),
             aligner=build_aligner(c.caption_aligner, model=c.whisper_model, language=c.content_language),
@@ -161,6 +164,7 @@ class ContentAgent:
             variator=None if publish_only else self.build_variator(),
             similarity_threshold=max(0, c.similarity_threshold) / 100,
             require_music_license=c.require_music_license,
+            daily_budget_usd=c.budget(),
         )
 
     def capcut_exporter(self, *, force: bool | None = None) -> CapCutExporter:

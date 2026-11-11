@@ -49,6 +49,7 @@ class RunOutcome:
     pending_review: bool = False
     similarity: float | None = None
     similar_to: int | None = None
+    cost: dict | None = None
 
 
 class ContentPipeline:
@@ -66,6 +67,7 @@ class ContentPipeline:
         variator: Variator | None = None,
         similarity_threshold: float = SIMILARITY_THRESHOLD,
         require_music_license: bool = True,
+        daily_budget_usd: float = 0.0,
     ) -> None:
         if require_approval and history is None:
             raise ValueError("require_approval needs a HistoryStore to hold the review queue")
@@ -80,6 +82,7 @@ class ContentPipeline:
         self._variator = variator
         self._similarity_threshold = similarity_threshold
         self._require_music_license = require_music_license
+        self._daily_budget_usd = daily_budget_usd
 
     @property
     def history(self) -> HistoryStore | None:
@@ -127,6 +130,15 @@ class ContentPipeline:
             )
             return RunOutcome(skipped=True)
 
+        if self._daily_budget_usd and self._history:
+            spent = self._history.cost_since(24)
+            if spent >= self._daily_budget_usd:
+                error = StudioStageError(
+                    "budget", f"Daily budget of ${self._daily_budget_usd:.2f} reached (${spent:.2f} spent on AI "
+                              "engines in the last 24 h) — raise DAILY_BUDGET_USD or wait")
+                self._record_error(topic, "budget", error)
+                raise error
+
         plan = None
         if self._variator:
             music = getattr(self._studio, "music", None)
@@ -148,6 +160,8 @@ class ContentPipeline:
             )
         except StudioStageError as exc:
             self._record_error(topic, exc.stage, exc)
+            if self._history:
+                self._history.record_cost(topic, exc.cost)
             raise
         script = storyboard.to_script_result()
         # Compared like for like with history.recent_scripts(): description + narration.
@@ -175,9 +189,14 @@ class ContentPipeline:
                 logger.exception("CapCut export failed — continuing without a draft")
                 self._record_error(topic, "capcut", exc)
 
-        outcome = RunOutcome(script=script, video=video, capcut_draft=capcut_draft,
+        cost = raw.get("cost")
+        outcome = RunOutcome(script=script, video=video, capcut_draft=capcut_draft, cost=cost,
                              similarity=round(similarity, 3) if similar_to else None, similar_to=similar_to)
+        if cost:
+            logger.info("Engine cost for %r: $%.4f%s", topic, cost["usd"], "" if cost["complete"] else " (+ unpriced)")
         if dry_run:
+            if self._history:
+                self._history.record_cost(topic, cost)
             logger.info("Dry run — skipping review and publish. Video at %s", video.file_path)
             return outcome
 
@@ -186,7 +205,9 @@ class ContentPipeline:
                 topic, script, video, status=PENDING, platforms=self.publisher_names,
                 variation=raw.get("variation") or (plan.to_dict() if plan else None),
                 provenance=raw.get("provenance"), similarity=outcome.similarity, similar_to=similar_to,
+                cost_usd=cost["usd"] if cost else None,
             )
+            self._history.record_cost(topic, cost, run_id=outcome.run_id)
         if self._require_approval:
             logger.info("Run #%s is waiting for review: %s", outcome.run_id, video.file_path)
             outcome.pending_review = True

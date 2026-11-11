@@ -22,8 +22,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
+from ai_content_agent.costs import CostMeter, PriceBook
 from ai_content_agent.media import encoders
-from ai_content_agent.media.ffmpeg import wav_duration
+from ai_content_agent.media.ffmpeg import probe_video, wav_duration
 from ai_content_agent.providers.base import (
     ImageGenerator,
     TextGenerator,
@@ -75,6 +76,7 @@ class StudioSettings:
     ai_label: str | None = None  # text kept in a corner of the video, e.g. "Video có sử dụng AI"
     require_music_license: bool = True
     video_encoder: str = "auto"  # auto | libx264 | h264_nvenc | h264_qsv | h264_amf
+    pricing_file: str | None = None  # JSON overriding costs.DEFAULT_PRICES
     scene_padding: float = 0.35
     max_workers: int = 4
     retry_attempts: int = 3
@@ -113,6 +115,7 @@ class StudioStageError(RuntimeError):
     def __init__(self, stage: str, message: str) -> None:
         super().__init__(message)
         self.stage = stage
+        self.cost: dict | None = None  # what the failed run had already spent (set by produce)
 
 
 def _is_transient(exc: Exception) -> bool:
@@ -152,6 +155,7 @@ class VideoStudio:
         self._voice = voice
         self._settings = settings or StudioSettings()
         self._aligner = aligner
+        self._prices = PriceBook(self._settings.pricing_file)
         self.music = MusicLibrary(self._settings.music_dir, self._settings.require_music_license)
 
     @property
@@ -184,23 +188,31 @@ class VideoStudio:
     ) -> tuple[Storyboard, VideoResult]:
         report = progress or _no_progress
         report("script", 0, 0)
-        if checkpoint and checkpoint.storyboard:
-            storyboard = storyboard_from_dict(checkpoint.storyboard)
-            logger.info("Resuming with the saved storyboard %r", storyboard.title)
-        else:
-            hook = plan.hook_instruction if plan else ""
-            storyboard = self.write_storyboard(topic, style=style, hook=hook)
-            similar = review(storyboard) if review else None
-            if similar:
-                logger.info("Storyboard too similar to an earlier script — rewriting once with a different angle")
-                storyboard = self.write_storyboard(topic, style=style, hook=hook, avoid=similar)
-            if checkpoint:
-                checkpoint.storyboard = storyboard.to_dict()
-                checkpoint.commit()
-        return storyboard, self.render(storyboard, progress=report, plan=plan, checkpoint=checkpoint)
+        meter = CostMeter(self._prices)
+        try:
+            if checkpoint and checkpoint.storyboard:
+                storyboard = storyboard_from_dict(checkpoint.storyboard)
+                logger.info("Resuming with the saved storyboard %r", storyboard.title)
+            else:
+                hook = plan.hook_instruction if plan else ""
+                storyboard = self.write_storyboard(topic, style=style, hook=hook, meter=meter)
+                similar = review(storyboard) if review else None
+                if similar:
+                    logger.info("Storyboard too similar to an earlier script — rewriting once with a different angle")
+                    storyboard = self.write_storyboard(topic, style=style, hook=hook, avoid=similar, meter=meter)
+                if checkpoint:
+                    checkpoint.storyboard = storyboard.to_dict()
+                    checkpoint.commit()
+            return storyboard, self.render(storyboard, progress=report, plan=plan, checkpoint=checkpoint, meter=meter)
+        except StudioStageError as exc:
+            exc.cost = meter.summary()  # money already spent on a run that failed
+            raise
 
-    def write_storyboard(self, topic: str, *, style: str = "", hook: str = "", avoid: str = "") -> Storyboard:
+    def write_storyboard(
+        self, topic: str, *, style: str = "", hook: str = "", avoid: str = "", meter: CostMeter | None = None
+    ) -> Storyboard:
         logger.info("Writing storyboard for topic=%r via %s", topic, self._writer.name)
+        self._writer.last_usage = None
         try:
             return self._with_retries(
                 write_storyboard,
@@ -214,6 +226,11 @@ class VideoStudio:
             )
         except Exception as exc:
             raise StudioStageError("script", f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            usage = self._writer.last_usage  # billed even when the reply could not be parsed
+            if meter is not None and usage:
+                meter.add_text(self._writer.name, usage.get("model") or getattr(self._writer, "_model", None),
+                               usage.get("input_tokens", 0), usage.get("output_tokens", 0))
 
     def render(
         self,
@@ -222,9 +239,11 @@ class VideoStudio:
         progress: Progress | None = None,
         plan: VariationPlan | None = None,
         checkpoint: Checkpoint | None = None,
+        meter: CostMeter | None = None,
     ) -> VideoResult:
         report = progress or _no_progress
         plan = plan or VariationPlan()
+        meter = meter or CostMeter(self._prices)
         work = self._work_dir(storyboard.title, checkpoint)
         cwd = str(work)
         (work / "storyboard.json").write_text(
@@ -241,7 +260,7 @@ class VideoStudio:
         logger.info("Rendering %d scenes in %s (visual=%s, voice=%s)", len(scenes), work, self._visuals.name, self._voice.name)
 
         voice_durations = self._generate_assets(
-            [" ".join(words) for words in spoken], prompts, visual_files, work, is_video, report, plan.voice
+            [" ".join(words) for words in spoken], prompts, visual_files, work, is_video, report, plan.voice, meter
         )
         word_times, scores = self._word_times(work, caption_words, spoken, voice_durations)
 
@@ -289,6 +308,7 @@ class VideoStudio:
                 scenes=len(scenes), duration=total,
             )
             provenance["encoder"] = encoder.name
+            provenance["cost"] = meter.summary()
             if scores:
                 provenance["pronunciation"] = {"scene_scores": scores, "min": min(scores)}
             (work / "provenance.json").write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -310,7 +330,7 @@ class VideoStudio:
             width=render.WIDTH,
             height=render.HEIGHT,
             raw={"work_dir": str(work), "scenes": len(scenes), "engines": self.engine_names,
-                 "provenance": provenance, "variation": plan.to_dict()},
+                 "provenance": provenance, "variation": plan.to_dict(), "cost": provenance["cost"]},
         )
 
     def _word_times(self, work: Path, caption_words, spoken, voice_durations) -> tuple[list[list[TimedWord]], list[float]]:
@@ -355,7 +375,7 @@ class VideoStudio:
 
     def _generate_assets(
         self, narrations: list[str], prompts: list[str], visual_files: list[str], work: Path, is_video: bool,
-        report: Progress, voice_name: str | None = None,
+        report: Progress, voice_name: str | None = None, meter: CostMeter | None = None,
     ) -> list[float]:
         """Voice and visual for every scene, concurrently — these are the slow API calls.
         Files already in the work folder (a resumed run) are reused, not generated again."""
@@ -369,15 +389,22 @@ class VideoStudio:
                 finished[0] += 1
                 report("assets", finished[0], total)
 
+        meter = meter or CostMeter(self._prices)
+        voice_model, visual_model = getattr(self._voice, "_model", None), getattr(self._visuals, "_model", None)
+
         def make_voice(i: int, text: str) -> float:
             raw, clean = f"scene_{i:02d}_voice_raw.wav", f"scene_{i:02d}_voice.wav"
-            if not _exists(work / clean):
+            generated = not _exists(work / clean)
+            if generated:
                 if voice_name:
                     self._with_retries(self._voice.synthesize, text, str(work / raw), voice=voice_name)
                 else:
                     self._with_retries(self._voice.synthesize, text, str(work / raw))
                 render.normalize_audio(raw, clean, cwd=str(work))
-            return wav_duration(str(work / clean))
+            duration = wav_duration(str(work / clean))
+            if generated:  # files reused from a checkpoint were paid for by the earlier attempt
+                meter.add_voice(self._voice.name, voice_model, duration)
+            return duration
 
         def make_visual(prompt: str, name: str) -> None:
             if _exists(work / name):
@@ -385,6 +412,14 @@ class VideoStudio:
             generate = self._visuals.generate_clip if is_video else self._visuals.generate_image
             with visual_slots:
                 self._with_retries(generate, prompt, str(work / name))
+            if not is_video:
+                meter.add_images(self._visuals.name, visual_model)
+                return
+            try:
+                seconds = probe_video(str(work / name))[2]
+            except Exception:
+                seconds = float(getattr(self._visuals, "clip_seconds", 8))
+            meter.add_video(self._visuals.name, visual_model, seconds)
 
         pool = ThreadPoolExecutor(max_workers=self._settings.max_workers, thread_name_prefix="studio")
         try:

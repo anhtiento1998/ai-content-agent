@@ -35,6 +35,7 @@ const STAGES = {
   publish: "Đăng bài",
   takedown: "Gỡ bài",
   capcut: "Xuất CapCut",
+  budget: "Hạn mức chi tiêu",
 };
 const ENGINE_CHIPS = [
   ["script", "text_provider", "text_providers"],
@@ -374,9 +375,26 @@ function lastReview(run) {
   return el("div", { class: "muted review-log", title: entry.note || "", text: entry.note ? `${text} — “${entry.note}”` : text });
 }
 
+/** "$0.12" (≈ 3.100đ when USD_VND_RATE is set); "+?" marks engines without a known price. */
+function money(usd, complete = true) {
+  if (usd == null) return null;
+  const rate = ((state.config || {}).costs || {}).usd_vnd_rate || 0;
+  const dollars = usd >= 0.1 ? usd.toFixed(2) : usd.toFixed(3);
+  const vnd = rate ? ` ≈ ${Math.round(usd * rate).toLocaleString("vi-VN")}đ` : "";
+  return `$${dollars}${vnd}${complete ? "" : " +?"}`;
+}
+
 function renderStats(stats) {
   setNumber($("stat-runs"), stats.total_runs);
-  $("stat-runs").nextElementSibling.textContent = stats.pending_review ? `video đã sản xuất · ${stats.pending_review} chờ duyệt` : "video đã sản xuất";
+  const budget = ((state.config || {}).costs || {}).daily_budget_usd || 0;
+  const spend = [
+    stats.pending_review ? `${stats.pending_review} chờ duyệt` : null,
+    stats.cost_30d_usd ? `30 ngày: ${money(stats.cost_30d_usd, !stats.cost_unpriced_runs_30d)}` : null,
+    budget ? `24h: ${money(stats.cost_24h_usd || 0)} / $${budget}` : null,
+  ].filter(Boolean);
+  const sub = $("stat-runs").nextElementSibling;
+  sub.textContent = ["video đã sản xuất", ...spend].join(" · ");
+  sub.title = "Chi phí là ước tính theo bảng giá niêm yết của các engine AI (sửa bằng PRICING_FILE)";
   setNumber($("stat-publishes"), stats.total_publishes);
   setNumber($("stat-errors"), stats.errors_last_7_days);
   $("stat-last").textContent = relativeTime(stats.last_run_at);
@@ -481,10 +499,11 @@ function buildJobCard(job, previousPercent, isNew) {
   const { steps, states, fraction } = sequenceFor(job);
   const platforms = job.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ") || "—";
   const meta = [
-    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt" }[job.source] || "▸ thủ công",
+    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt", mcp: "◈ agent" }[job.source] || "▸ thủ công",
     job.dry_run ? "chạy thử" : platforms,
     formatTime(job.finished_at || job.started_at || job.created_at),
-  ].join("  ·  ");
+    job.cost_usd != null ? `chi phí ${money(job.cost_usd, job.cost_complete)}` : null,
+  ].filter(Boolean).join("  ·  ");
 
   const sequence = el("div", { class: "sequence", role: "list", "aria-label": "Tiến trình" });
   steps.forEach(([key, label], i) => {
@@ -738,6 +757,12 @@ function reviewFacts(run) {
     facts.push(el("span", { class: `fact ${pct >= 35 ? "bad" : "warn"}`,
       title: "Độ trùng ý với kịch bản đã làm trước đó (3 từ liên tiếp giống nhau)",
       text: `giống #${run.similar_to}: ${pct}%` }));
+  }
+  if (run.cost_usd != null) {
+    const cost = (run.provenance || {}).cost || {};
+    const detail = (cost.items || []).map((i) =>
+      `${i.kind} ${i.provider}${i.model ? `/${i.model}` : ""}: ${i.usd == null ? "chưa có giá" : `$${i.usd}`}`).join("\n");
+    facts.push(el("span", { class: "fact", title: detail, text: `chi phí: ${money(run.cost_usd, cost.complete !== false)}` }));
   }
   const pron = ((run.provenance || {}).pronunciation || {}).min;
   if (pron != null) {
