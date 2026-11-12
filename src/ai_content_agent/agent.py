@@ -117,6 +117,7 @@ class ContentAgent:
                         client_secret_file=c.youtube_client_secret_file,
                         privacy=c.youtube_privacy,
                         disclosure=disclosure,
+                        retries=c.upload_retries,
                     )
                 )
             elif platform == "tiktok" and c.tiktok_via == "upload-post":
@@ -137,12 +138,13 @@ class ContentAgent:
                     token_file=c.tiktok_token_file,
                 )
                 publishers.append(
-                    TikTokPublisher(tokens, c.tiktok_privacy_level, disclosure=disclosure, mode=c.tiktok_mode)
+                    TikTokPublisher(tokens, c.tiktok_privacy_level, disclosure=disclosure, mode=c.tiktok_mode,
+                                    retries=c.upload_retries)
                 )
             elif platform == "facebook":
                 publishers.append(
                     FacebookPublisher(page_id=c.facebook_page_id, access_token=c.facebook_access_token,
-                                      disclosure=disclosure)
+                                      disclosure=disclosure, retries=c.upload_retries)
                 )
             else:
                 raise ValueError(f"Unknown platform: {platform!r}")

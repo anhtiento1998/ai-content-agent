@@ -9,7 +9,7 @@ the user visits via CSRF / DNS rebinding.
 from __future__ import annotations
 
 import secrets
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -24,7 +24,7 @@ from ai_content_agent.history import PENDING, REJECTED, HistoryStore
 from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchStore, batch_summary, parse_manifest
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
 from ai_content_agent.pipeline.drafts import DISCARDED, OPEN, DraftStore, clean_storyboard
-from ai_content_agent.pipeline.scheduler import TopicRotation
+from ai_content_agent.pipeline.scheduler import ScheduleManager
 from ai_content_agent.publishers import PUBLISHERS
 from ai_content_agent.web.jobs import JobManager
 
@@ -105,13 +105,14 @@ class TakedownRequest(ReviewerMixin):
     reason: str = Field("", max_length=500)
 
 
-@dataclass
-class ScheduleInfo:
-    cron: str
-    platforms: list[str]
-    rotation: TopicRotation
-    scheduler: object
-    skip: Callable[[str], bool] = lambda _topic: False
+class ScheduleUpdate(BaseModel):
+    cron: str = Field("", max_length=120)
+    platforms: list[Platform] = Field(default_factory=list)
+    enabled: bool = False
+
+
+class ScheduleTopics(BaseModel):
+    topics: list[str] = Field(min_length=1, max_length=500)
 
 
 def create_app(
@@ -120,7 +121,7 @@ def create_app(
     jobs: JobManager,
     token: str,
     config_status: dict,
-    schedule: ScheduleInfo | None = None,
+    schedule: ScheduleManager | None = None,
     capcut_exporter: CapCutExporter | None = None,
     pipeline_factory: Callable[..., ContentPipeline] | None = None,
     batches: BatchStore | None = None,
@@ -386,19 +387,34 @@ def create_app(
     def config() -> dict:
         return config_status
 
+    def _schedule() -> ScheduleManager:
+        if schedule is None:
+            raise HTTPException(status_code=501, detail="The schedule is not available on this server")
+        return schedule
+
     @api.get("/schedule")
     def schedule_info() -> dict:
-        if schedule is None:
-            return {"enabled": False}
-        next_run = schedule.scheduler.get_job("content-run").next_run_time
-        return {
-            "enabled": True,
-            "cron": schedule.cron,
-            "platforms": schedule.platforms,
-            "topics": schedule.rotation.topics,
-            "next_topic": schedule.rotation.peek(skip=schedule.skip),
-            "next_run_at": next_run.isoformat() if next_run else None,
-        }
+        return schedule.info() if schedule is not None else {"enabled": False}
+
+    @api.put("/schedule")
+    def update_schedule(body: ScheduleUpdate) -> dict:
+        try:
+            return _schedule().update(cron=body.cron, platforms=body.platforms, enabled=body.enabled)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @api.post("/schedule/topics")
+    def add_schedule_topics(body: ScheduleTopics) -> dict:
+        manager = _schedule()
+        added = manager.store.add_topics([topic for topic in body.topics if len(topic) <= 300])
+        return {**manager.info(), "added": added}
+
+    @api.delete("/schedule/topics/{topic_id}")
+    def remove_schedule_topic(topic_id: int) -> dict:
+        manager = _schedule()
+        if not manager.store.remove_topic(topic_id):
+            raise HTTPException(status_code=404, detail="Topic not found")
+        return manager.info()
 
     app.include_router(api)
 

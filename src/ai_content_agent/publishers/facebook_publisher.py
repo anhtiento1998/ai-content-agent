@@ -21,6 +21,7 @@ import os
 
 import requests
 
+from . import http
 from .base import Disclosure, Publisher, PublishRejected, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
@@ -43,7 +44,9 @@ def _check(resp: dict, step: str) -> dict:
 class FacebookPublisher(Publisher):
     name = "facebook"
 
-    def __init__(self, page_id: str, access_token: str, *, disclosure: Disclosure | None = None) -> None:
+    def __init__(self, page_id: str, access_token: str, *, disclosure: Disclosure | None = None,
+                 retries: int = http.DEFAULT_ATTEMPTS) -> None:
+        self._retries = retries
         self._page_id = page_id
         self._given_token = access_token
         self._page_token: str | None = None
@@ -86,8 +89,13 @@ class FacebookPublisher(Publisher):
 
     def _publish_reel(self, video: VideoResult, script: ScriptResult) -> PublishResult:
         endpoint = f"{_GRAPH}/{self._page_id}/video_reels"
+        token = self._access_token
+        # Each phase can be repeated: "start" only reserves an id, the upload restarts at offset 0
+        # for the same id, and "finish" publishes that one id.
         start = _check(
-            requests.post(endpoint, params={"upload_phase": "start", "access_token": self._access_token}, timeout=30).json(),
+            http.send(lambda: requests.post(endpoint, params={"upload_phase": "start", "access_token": token},
+                                            timeout=30),
+                      "starting the Facebook reel", attempts=self._retries).json(),
             "reel start",
         )
         video_id = start.get("video_id")
@@ -95,27 +103,34 @@ class FacebookPublisher(Publisher):
             raise RuntimeError(f"Facebook reel start returned no video_id: {start}")
 
         size = os.path.getsize(video.file_path)
-        with open(video.file_path, "rb") as f:
-            upload = requests.post(
-                start.get("upload_url") or f"{_RUPLOAD}/{video_id}",
-                headers={"Authorization": f"OAuth {self._access_token}", "offset": "0", "file_size": str(size)},
-                data=f,
-                timeout=600,
-            ).json()
+
+        def upload_file():
+            with open(video.file_path, "rb") as f:
+                return requests.post(
+                    start.get("upload_url") or f"{_RUPLOAD}/{video_id}",
+                    headers={"Authorization": f"OAuth {token}", "offset": "0", "file_size": str(size)},
+                    data=f,
+                    timeout=600,
+                )
+
+        upload = http.send(upload_file, "uploading the reel to Facebook", attempts=self._retries).json()
         if not _check(upload, "reel upload").get("success"):
             raise RuntimeError(f"Facebook reel upload was not accepted: {upload}")
 
         finish = _check(
-            requests.post(
-                endpoint,
-                params={
-                    "upload_phase": "finish",
-                    "video_id": video_id,
-                    "video_state": "PUBLISHED",
-                    "description": self._description(script),
-                    "access_token": self._access_token,
-                },
-                timeout=60,
+            http.send(
+                lambda: requests.post(
+                    endpoint,
+                    params={
+                        "upload_phase": "finish",
+                        "video_id": video_id,
+                        "video_state": "PUBLISHED",
+                        "description": self._description(script),
+                        "access_token": token,
+                    },
+                    timeout=60,
+                ),
+                "publishing the Facebook reel", attempts=self._retries,
             ).json(),
             "reel finish",
         )
@@ -130,20 +145,30 @@ class FacebookPublisher(Publisher):
         )
 
     def _publish_page_video(self, video: VideoResult, script: ScriptResult) -> PublishResult:
-        with open(video.file_path, "rb") as f:
-            resp = requests.post(
-                f"{_GRAPH_VIDEO}/{self._page_id}/videos",
-                params={"access_token": self._access_token},
-                data={"description": self._description(script), "title": script.title[:100]},
-                files={"source": f},
-                timeout=600,
-            ).json()
+        token = self._access_token
+
+        def upload_file():
+            with open(video.file_path, "rb") as f:
+                return requests.post(
+                    f"{_GRAPH_VIDEO}/{self._page_id}/videos",
+                    params={"access_token": token},
+                    data={"description": self._description(script), "title": script.title[:100]},
+                    files={"source": f},
+                    timeout=600,
+                )
+
+        # One request uploads and publishes: if its reply is lost the video may be live, so it is
+        # only repeated when the connection was never made.
+        resp = http.send(upload_file, "uploading the video to Facebook", attempts=self._retries,
+                         idempotent=False).json()
         video_id = _check(resp, "video upload").get("id")
         if not video_id:
             raise RuntimeError(f"Facebook video upload returned no id: {resp}")
         return PublishResult(platform=self.name, remote_id=video_id, url=f"https://www.facebook.com/watch/?v={video_id}", raw=resp)
 
     def delete(self, remote_id: str) -> None:
-        resp = requests.delete(f"{_GRAPH}/{remote_id}", params={"access_token": self._access_token}, timeout=30).json()
+        token = self._access_token
+        resp = http.send(lambda: requests.delete(f"{_GRAPH}/{remote_id}", params={"access_token": token}, timeout=30),
+                         "deleting the Facebook post", attempts=self._retries).json()
         if not _check(resp, "delete").get("success", False):
             raise RuntimeError(f"Facebook did not confirm deleting {remote_id}: {resp}")

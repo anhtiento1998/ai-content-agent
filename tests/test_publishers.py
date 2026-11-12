@@ -262,8 +262,11 @@ class FakeYouTube:
         self.deleted = id
         return self
 
-    def execute(self):
+    def execute(self, num_retries=0):
         return self.response
+
+    def next_chunk(self):
+        return None, self.response
 
 
 def _youtube(monkeypatch, response, **kwargs):

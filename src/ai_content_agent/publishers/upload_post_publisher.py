@@ -19,6 +19,7 @@ import logging
 
 import requests
 
+from . import http
 from .base import Disclosure, Publisher, PublishRejected, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
@@ -82,14 +83,18 @@ class UploadPostPublisher(Publisher):
         ]
         if self.name == "tiktok":
             data += [("privacy_level", self._privacy_level), ("is_aigc", str(self._disclosure.enabled).lower())]
-        with open(video.file_path, "rb") as f:
-            resp = requests.post(
-                f"{API_BASE}/upload",
-                headers=self._headers(),
-                data=data,
-                files=[("video", ("final.mp4", f, "video/mp4"))],
-                timeout=self._timeout,
-            )
+        def upload_file():
+            with open(video.file_path, "rb") as f:
+                return requests.post(
+                    f"{API_BASE}/upload",
+                    headers=self._headers(),
+                    data=data,
+                    files=[("video", ("final.mp4", f, "video/mp4"))],
+                    timeout=self._timeout,
+                )
+
+        # One request uploads and queues the post, so it is only repeated if it never connected.
+        resp = http.send(upload_file, f"uploading to Upload-Post ({self.name})", idempotent=False)
         try:
             body = resp.json()
         except ValueError:

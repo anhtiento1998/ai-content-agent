@@ -515,3 +515,28 @@ textarea { resize: vertical; min-height: 110px; font-family: var(--mono); font-s
 .scene-row .scene-prompt { font-family: var(--mono); font-size: 0.8rem; }
 .draft-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
 .draft-stats { font: 0.78rem var(--mono); }
+
+/* ---------- schedule editor ---------- */
+.schedule-editor { margin-top: 14px; border-top: 1px solid var(--panel-border); padding-top: 12px; }
+.schedule-editor > summary { cursor: pointer; font: 600 0.8rem var(--mono); color: var(--cyan); letter-spacing: 0.03em; }
+.schedule-editor form { display: grid; gap: 10px; margin-top: 12px; }
+.schedule-when { display: grid; grid-template-columns: minmax(110px, 150px) 1fr; gap: 12px; }
+.schedule-when .field { margin: 0; }
+input[type="time"] {
+  width: 100%; padding: 10px 12px; font: 0.95rem var(--mono); color: var(--text); color-scheme: dark;
+  background: rgba(4, 6, 18, 0.7); border: 1px solid var(--panel-border); border-radius: 10px;
+}
+input[type="time"]:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(77, 227, 255, 0.15); }
+.days { display: flex; flex-wrap: wrap; gap: 6px; }
+.day { display: inline-flex; align-items: center; gap: 5px; padding: 6px 9px; border: 1px solid var(--panel-border); border-radius: 8px; font: 0.78rem var(--mono); cursor: pointer; }
+.day:has(input:checked) { border-color: rgba(77, 227, 255, 0.6); color: var(--cyan); background: rgba(77, 227, 255, 0.07); }
+.schedule-advanced summary { cursor: pointer; font: 0.74rem var(--mono); color: var(--muted); margin-bottom: 6px; }
+.platforms.compact { display: flex; flex-wrap: wrap; gap: 8px; }
+.platforms.compact .platform { padding: 7px 10px; font-size: 0.85rem; }
+.schedule-topics { margin-top: 16px; display: grid; gap: 8px; }
+.topic-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 260px; overflow-y: auto; }
+.topic-list li { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 10px; border: 1px solid var(--panel-border); border-radius: 8px; font-size: 0.88rem; }
+.topic-text { min-width: 0; overflow-wrap: anywhere; }
+.topic-text .muted { font-size: 0.74rem; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
+#schedule-topic-form textarea { min-height: 70px; font-family: var(--sans); font-size: 0.9rem; }
+@media (max-width: 560px) { .schedule-when { grid-template-columns: 1fr; } }

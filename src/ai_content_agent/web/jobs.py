@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 # factory(platforms, publish_only=False) -> ContentPipeline
 PipelineFactory = Callable[..., ContentPipeline]
 _TERMINAL = {"succeeded", "partial", "skipped", "failed", "review", "scripted"}
+MAX_AUTO_RETRIES = 3  # delayed publish retries per run after a network outage
 
 
 def _now() -> str:
@@ -66,6 +67,8 @@ class Job:
     cost_usd: float | None = None
     cost_complete: bool = True
     draft_id: int | None = None
+    auto_retries: int = 0
+    retry_at: str | None = None  # when an automatic publish retry is scheduled
 
 
 class JobManager:
@@ -77,11 +80,14 @@ class JobManager:
         max_jobs: int = 100,
         batch_runner: BatchRunner | None = None,
         drafts: DraftStore | None = None,
+        auto_retry_minutes: float = 0,
     ) -> None:
         self._factory = pipeline_factory
         self._history = history
         self._batch_runner = batch_runner
         self._drafts = drafts
+        self._auto_retry_seconds = max(0.0, auto_retry_minutes) * 60
+        self._timers: list[threading.Timer] = []
         self._batch_items: dict[str, BatchItem] = {}
         self._max_jobs = max_jobs
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="content-job")
@@ -112,15 +118,35 @@ class JobManager:
         ))
 
     def submit_publish(
-        self, run_id: int, topic: str, platforms: list[str], *, source: str = "review", actor: str | None = None
+        self, run_id: int, topic: str, platforms: list[str], *, source: str = "review", actor: str | None = None,
+        auto_retries: int = 0,
     ) -> Job:
         """Publish an already-rendered run (approve from the review queue, or retry failed platforms).
         `source` review|retry is logged with `actor` in the reviewer audit log."""
 
         return self._enqueue(Job(
             id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style="", dry_run=False,
-            force=False, source=source, kind="publish", run_id=run_id, actor=actor,
+            force=False, source=source, kind="publish", run_id=run_id, actor=actor, auto_retries=auto_retries,
         ))
+
+    def _schedule_retry(self, job: Job, platforms: list[str]) -> None:
+        """After a network outage (nothing was sent), publish the missing platforms again later."""
+
+        if not (self._auto_retry_seconds and job.run_id and platforms and job.auto_retries < MAX_AUTO_RETRIES):
+            return
+        delay = self._auto_retry_seconds * 2 ** job.auto_retries  # 5, 10, 20 minutes by default
+        job.retry_at = datetime.fromtimestamp(datetime.now(timezone.utc).timestamp() + delay, timezone.utc).isoformat()
+        message = (f"Không có mạng khi đăng lên {', '.join(platforms)} — sẽ tự thử lại sau {delay / 60:.0f} phút "
+                   f"(lần {job.auto_retries + 1}/{MAX_AUTO_RETRIES}).")
+        logger.warning(message)
+        if self._history:
+            self._history.record_error(job.topic, "publish", message, run_id=job.run_id)
+        timer = threading.Timer(delay, self.submit_publish, args=(job.run_id, job.topic, platforms),
+                                kwargs={"source": "auto-retry", "auto_retries": job.auto_retries + 1})
+        timer.daemon = True
+        with self._lock:
+            self._timers = [t for t in self._timers if t.is_alive()] + [timer]
+        timer.start()
 
     def submit_script(self, topic: str, platforms: list[str], *, style: str = "", force: bool = False) -> Job:
         """Write a storyboard only; it lands on the script desk for editing."""
@@ -253,13 +279,13 @@ class JobManager:
             if not finished and draft is not None:
                 self._drafts.set_status(draft.id, OPEN)
 
-    @staticmethod
-    def _finish(job: Job, outcome: RunOutcome) -> None:
+    def _finish(self, job: Job, outcome: RunOutcome) -> None:
         if outcome.skipped:
             job.status = "skipped"
             job.error = "Topic này đã được đăng hoặc đang chờ duyệt — bật “Đăng lại” để bỏ qua kiểm tra trùng."
             return
         job.run_id = outcome.run_id or job.run_id
+        self._schedule_retry(job, outcome.retry_later)
         if outcome.cost:
             job.cost_usd, job.cost_complete = outcome.cost["usd"], outcome.cost["complete"]
         job.video_path = outcome.video.file_path if outcome.video else None
@@ -299,6 +325,9 @@ class JobManager:
         self._futures[job_id].result(timeout=timeout)
 
     def shutdown(self) -> None:
+        with self._lock:
+            for timer in self._timers:
+                timer.cancel()
         self._executor.shutdown(wait=False, cancel_futures=True)
 
 

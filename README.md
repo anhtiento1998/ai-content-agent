@@ -371,7 +371,24 @@ chữ ký số (cần chứng thư ký số riêng) — xem Roadmap.
 ai-content-agent history --limit 20
 ```
 
-## Chạy theo lịch (cron, trong 1 tiến trình dài hạn)
+## Lịch tự động trên dashboard
+
+Trong ô **Lịch tự động** của dashboard, mở *⚙ Chỉnh lịch và danh sách chủ đề*:
+
+- **Giờ chạy và các ngày** (T2…CN), hoặc *Cron nâng cao* nếu cần lịch phức
+  tạp (ghi thứ bằng tên `mon tue wed thu fri sat sun`).
+- **Nền tảng** đăng theo lịch, và công tắc **Bật lịch tự động**.
+- **Danh sách chủ đề**: dán mỗi dòng một chủ đề để thêm (chủ đề trùng tự bỏ
+  qua), bấm ✕ để xoá. Mỗi lượt lấy chủ đề **lâu chưa dùng nhất** và bỏ qua
+  chủ đề vừa làm trong `DEDUP_WINDOW_DAYS` ngày; nhãn *kế tiếp* cho biết
+  chủ đề của lượt tới.
+
+Lịch và danh sách lưu trong `HISTORY_DB_PATH`: đổi là có hiệu lực ngay, không
+cần khởi động lại, và vòng xoay chủ đề không quay về đầu khi mở lại app. Tham
+số `--cron/--topic/--platform` của lệnh `dashboard` vẫn dùng được — chúng ghi
+vào lịch đã lưu. Video làm theo lịch cũng vào khu Chờ duyệt.
+
+## Chạy theo lịch bằng dòng lệnh (không cần dashboard)
 
 ```bash
 ai-content-agent schedule "Chủ đề 1" "Chủ đề 2" --cron "0 9 * * *" --platform youtube
@@ -394,6 +411,18 @@ người vận hành có kinh nghiệm đều giữ bước người duyệt.
 
 - **Đăng lại**: lần chạy "Một phần"/"Thất bại" có nút *Đăng lại* — chỉ đăng
   lên nền tảng chưa thành công, không dựng lại video, không đăng trùng.
+- **Tự thử lại khi rớt mạng**:
+  - Từng bước tải lên tự thử lại tối đa `UPLOAD_RETRIES` lần (mặc định 4),
+    chờ tăng dần 2–4–8 giây. Thử lại theo **từng bước**, không đăng lại cả
+    bài, nên không tạo bài trùng: YouTube tải nối tiếp đúng phiên tải lên dở
+    dang; TikTok gửi lại đúng đoạn file bị rớt; Facebook Reels lặp lại đúng
+    pha bị lỗi cho cùng một video.
+  - Nếu **mất mạng hẳn** (chưa gửi được gì), dashboard tự xếp lịch đăng lại
+    sau `AUTO_RETRY_MINUTES` phút (mặc định 5, rồi 10, 20 — tối đa 3 lần;
+    đặt 0 để tắt). Thẻ tiến trình ghi "mất mạng — tự đăng lại lúc …".
+  - Bước không an toàn để lặp lại (tải một lần là đăng luôn: video Facebook
+    dài hơn 90 giây, Upload-Post) chỉ thử lại khi chắc chắn chưa kết nối
+    được; nếu rớt giữa chừng thì báo lỗi để bạn kiểm tra rồi bấm *Đăng lại*.
 - **Gỡ bài**: nút *Gỡ* xóa bài trên YouTube/Facebook (TikTok không có API
   xóa — app báo để gỡ tay trong ứng dụng). Chủ đề đã gỡ được phép làm lại.
 - **Giới hạn**: `MAX_POSTS_PER_DAY` (mặc định 3 bài/nền tảng/24 h), cộng
@@ -651,8 +680,7 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 
 ## Roadmap
 
-- [ ] Retry/backoff khi upload lên YouTube/TikTok/Facebook bị lỗi mạng
-      tạm thời.
+- [x] Tự thử lại khi tải lên bị rớt mạng (từng bước + tự đăng lại sau khi mất mạng).
 - [x] Thêm bước tạo thumbnail tự động.
 - [x] Thêm bước lưu lịch sử đã đăng (tránh trùng topic) — SQLite đơn giản.
 - [x] Xem lịch sử qua CLI (`ai-content-agent history`).
@@ -678,5 +706,4 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [ ] Tự loại định dạng kém dựa trên số liệu xem (cần tài khoản thật chạy một thời gian).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
       `MetaMuseVideoProvider.generate_clip()`.
-- [ ] Quản lý danh sách chủ đề cho lịch tự động ngay trên dashboard
-      (hiện truyền qua `--topic` khi khởi động).
+- [x] Quản lý lịch và danh sách chủ đề ngay trên dashboard.

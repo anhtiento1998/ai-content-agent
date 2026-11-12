@@ -26,6 +26,7 @@ from ai_content_agent.history import FAILED, PARTIAL, PENDING, PUBLISHED, REJECT
 from ai_content_agent.media.thumbnail import generate_thumbnail
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 from ai_content_agent.publishers.base import PLATFORM_DAILY_LIMITS, Publisher, PublishRejected, PublishResult
+from ai_content_agent.publishers.http import NetworkDown
 from ai_content_agent.studio import StudioStageError, VideoStudio
 from ai_content_agent.studio.provenance import publish_blocker
 from ai_content_agent.studio.studio import Checkpoint, Progress
@@ -51,6 +52,8 @@ class RunOutcome:
     similarity: float | None = None
     similar_to: int | None = None
     cost: dict | None = None
+    # Platforms that could not be reached at all (nothing was sent): safe to try again later.
+    retry_later: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -212,7 +215,7 @@ class ContentPipeline:
         if blocker:
             self._block(outcome.run_id, topic, blocker)
             return outcome
-        outcome.published = self._publish(outcome.run_id, topic, script, video, report)
+        outcome.published, outcome.retry_later = self._publish(outcome.run_id, topic, script, video, report)
         return outcome
 
     def write_script(self, topic: str, *, style: str = "", force: bool = False) -> ScriptDraft | None:
@@ -315,8 +318,8 @@ class ContentPipeline:
         if actor:
             for platform in self.publisher_names:
                 self._history.log_review(run_id, action, actor, platform=platform)
-        published = self._publish(run_id, run.topic, script, video, progress or _no_progress)
-        return RunOutcome(script=script, video=video, published=published, run_id=run_id)
+        published, offline = self._publish(run_id, run.topic, script, video, progress or _no_progress)
+        return RunOutcome(script=script, video=video, published=published, run_id=run_id, retry_later=offline)
 
     def takedown(self, run_id: int, platform: str, *, actor: str | None = None, note: str | None = None) -> None:
         """Delete the run's live post on `platform` and mark it taken down."""
@@ -337,8 +340,11 @@ class ContentPipeline:
 
     def _publish(
         self, run_id: int | None, topic: str, script: ScriptResult, video: VideoResult, report: Progress
-    ) -> list[PublishResult]:
+    ) -> tuple[list[PublishResult], list[str]]:
+        """Publish to every platform not yet live. Returns (results, platforms that were unreachable)."""
+
         results: list[PublishResult] = []
+        offline: list[str] = []
         total = len(self._publishers)
         report("publish", 0, total)
         for done, publisher in enumerate(self._publishers, 1):
@@ -371,9 +377,14 @@ class ContentPipeline:
                 result = publisher.publish(video, script)
             except Exception as exc:
                 logger.exception("Publish to %s failed", publisher.name)
+                if isinstance(exc, NetworkDown):
+                    offline.append(publisher.name)
                 if attempt:
-                    # A refusal before upload cannot have left a copy behind; anything else might have.
-                    self._history.finish_attempt(attempt, "rejected" if isinstance(exc, PublishRejected) else "error")
+                    # A refusal before upload, or a network that was never reached, cannot have left a
+                    # copy behind; anything else might have.
+                    self._history.finish_attempt(
+                        attempt, "rejected" if isinstance(exc, PublishRejected)
+                        else "not_sent" if isinstance(exc, NetworkDown) else "error")
                 self._record_error(topic, "publish", exc, run_id=run_id, platform=publisher.name)
                 report("publish", done, total)
                 continue
@@ -389,7 +400,7 @@ class ContentPipeline:
             wanted = set(run.platforms) or set(self.publisher_names)
             status = PUBLISHED if wanted <= live else PARTIAL if live else FAILED
             self._history.set_run_status(run_id, status)
-        return results
+        return results, offline
 
     def _recover_unrecorded(self, run_id: int, publisher: Publisher, script: ScriptResult) -> PublishResult | None:
         """After an attempt whose outcome is unknown, ask the platform whether the post exists already."""

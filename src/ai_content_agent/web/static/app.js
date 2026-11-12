@@ -424,10 +424,15 @@ function renderSchedule(schedule) {
   state.schedule = schedule;
   if (!changed("schedule", schedule)) return;
   const box = $("schedule");
+  const editor = $("schedule-editor");
+  editor.hidden = !schedule.editable;
+  if (schedule.editable) fillScheduleEditor(schedule);
   if (!schedule.enabled) {
     box.replaceChildren(el("div", { class: "schedule-off" }, [
       orbitGraphic(),
-      el("div", {}, [
+      el("div", {}, schedule.editable ? [
+        el("p", { class: "muted", text: "Lịch tự động đang tắt. Mở “Chỉnh lịch và danh sách chủ đề” bên dưới để đặt giờ chạy, nền tảng và chủ đề." }),
+      ] : [
         el("p", { class: "muted", text: "Chưa có quỹ đạo nào. Chạy dashboard kèm lịch để tự động phóng, ví dụ:" }),
         el("p", {}, el("code", { text: 'ai-content-agent dashboard --cron "0 9 * * *" --topic "Chủ đề 1" --platform youtube' })),
       ]),
@@ -435,17 +440,175 @@ function renderSchedule(schedule) {
     return;
   }
   const row = (label, value) => [el("dt", { text: label }), el("dd", { text: value })];
+  const topics = schedule.topics || [];
   box.replaceChildren(el("div", { class: "orbit-wrap" }, [
     orbitGraphic(),
     el("dl", { class: "schedule-grid" }, [
-      ...row("cron", schedule.cron),
+      ...row("lịch", describeCron(schedule.cron)),
       ...row("lần tới", formatTime(schedule.next_run_at)),
-      ...row("chủ đề", schedule.next_topic || "Hết chủ đề mới — mọi chủ đề đã đăng gần đây, hãy thêm chủ đề"),
+      ...row("chủ đề", schedule.next_topic || (topics.length
+        ? "Hết chủ đề mới — mọi chủ đề đã đăng gần đây, hãy thêm chủ đề"
+        : "Chưa có chủ đề nào — thêm ở bên dưới")),
       ...row("quỹ đạo", schedule.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ")),
-      ...row("danh sách", `${schedule.topics.length} chủ đề, xoay vòng`),
+      ...row("danh sách", `${topics.length} chủ đề, xoay vòng`),
     ]),
   ]));
   tickCountdown();
+}
+
+// ---------- schedule editor ----------
+
+const DAYS = [["mon", "T2"], ["tue", "T3"], ["wed", "T4"], ["thu", "T5"], ["fri", "T6"], ["sat", "T7"], ["sun", "CN"]];
+const SIMPLE_CRON = /^(\d{1,2}) (\d{1,2}) \* \* (\*|(?:mon|tue|wed|thu|fri|sat|sun)(?:,(?:mon|tue|wed|thu|fri|sat|sun))*)$/;
+
+/** {time: "HH:MM", days: [...]} for "M H * * days" expressions the simple controls can show, else null. */
+function parseSimpleCron(cron) {
+  const match = SIMPLE_CRON.exec((cron || "").trim().toLowerCase());
+  if (!match || Number(match[1]) > 59 || Number(match[2]) > 23) return null;
+  return {
+    time: `${match[2].padStart(2, "0")}:${match[1].padStart(2, "0")}`,
+    days: match[3] === "*" ? DAYS.map(([key]) => key) : match[3].split(","),
+  };
+}
+
+function describeCron(cron) {
+  const simple = parseSimpleCron(cron);
+  if (!simple) return cron;
+  const days = simple.days.length === 7 ? "mỗi ngày" : DAYS.filter(([key]) => simple.days.includes(key)).map(([, label]) => label).join(", ");
+  return `${simple.time} · ${days}`;
+}
+
+function cronFromEditor() {
+  const advanced = $("schedule-cron").value.trim();
+  if (advanced) return advanced;
+  const [hour, minute] = ($("schedule-time").value || "09:00").split(":").map(Number);
+  const days = DAYS.map(([key]) => key).filter((key) => $(`schedule-day-${key}`).checked);
+  if (!days.length) return "";
+  return `${minute} ${hour} * * ${days.length === 7 ? "*" : days.join(",")}`;
+}
+
+function fillScheduleEditor(schedule) {
+  const form = $("schedule-form");
+  if (!$("schedule-days").children.length) {
+    $("schedule-days").replaceChildren(...DAYS.map(([key, label]) => el("label", { class: "day" }, [
+      el("input", { type: "checkbox", id: `schedule-day-${key}`, checked: true }), el("span", { text: label }),
+    ])));
+  }
+  const ready = (state.config && state.config.platforms) || {};
+  if (!$("schedule-platforms").children.length) {
+    $("schedule-platforms").replaceChildren(...Object.keys(PLATFORM_LABELS).map((name) =>
+      el("label", { class: `platform${ready[name] && !ready[name].ready ? " disabled" : ""}`, title: ready[name] && ready[name].note }, [
+        el("input", { type: "checkbox", name: "schedule-platform", value: name }),
+        el("span", { text: PLATFORM_LABELS[name] }),
+      ])));
+  }
+  if (form.dataset.dirty !== "1") {  // never overwrite what the user is editing
+    $("schedule-enabled").checked = schedule.enabled;
+    const simple = parseSimpleCron(schedule.cron);
+    if (simple) {
+      $("schedule-time").value = simple.time;
+      for (const [key] of DAYS) $(`schedule-day-${key}`).checked = simple.days.includes(key);
+    }
+    $("schedule-cron").value = simple || !schedule.cron ? "" : schedule.cron;
+    form.querySelector(".schedule-advanced").open = Boolean(schedule.cron && !simple);
+    for (const input of document.querySelectorAll('input[name="schedule-platform"]')) {
+      input.checked = schedule.platforms.includes(input.value);
+    }
+  }
+  $("schedule-note").textContent = `Giờ theo múi ${schedule.timezone}`
+    + (schedule.jitter_minutes ? `; mỗi lượt lệch ngẫu nhiên tối đa ${schedule.jitter_minutes} phút.` : ".")
+    + " Video làm theo lịch cũng vào khu Chờ duyệt.";
+
+  const topics = schedule.topics || [];
+  $("schedule-topic-count").textContent = `(${topics.length})`;
+  $("schedule-topics").replaceChildren(...(topics.length ? topics.map((topic) => el("li", {}, [
+    el("div", { class: "topic-text" }, [
+      el("span", { text: topic.topic }),
+      el("div", { class: "muted" }, [
+        topic.uses ? `đã dùng ${topic.uses} lần · ${relativeTime(topic.last_used_at)}` : "chưa dùng",
+        topic.recently_done ? el("span", { class: "badge neutral", text: "vừa làm — đang bỏ qua" }) : null,
+        topic.topic === schedule.next_topic ? el("span", { class: "badge info", text: "kế tiếp" }) : null,
+      ]),
+    ]),
+    el("button", { type: "button", class: "btn small bad", "data-topic": String(topic.id), title: "Xoá khỏi lịch", text: "✕" }),
+  ])) : [el("li", { class: "muted", text: "// chưa có chủ đề nào" })]));
+}
+
+async function scheduleRequest(button, request, errorBox) {
+  if (errorBox) errorBox.hidden = true;
+  button.disabled = true;
+  try {
+    await request();
+    state.signatures.schedule = undefined;
+    await refresh();
+    return true;
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else if (errorBox) {
+      errorBox.textContent = err.message;
+      errorBox.hidden = false;
+    } else toast("bad", "SCHEDULE", err.message);
+    return false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function submitSchedule(event) {
+  event.preventDefault();
+  const form = $("schedule-form");
+  const errorBox = $("schedule-error");
+  const enabled = $("schedule-enabled").checked;
+  const cron = cronFromEditor();
+  const platforms = [...document.querySelectorAll('input[name="schedule-platform"]:checked')].map((i) => i.value);
+  const problem = !enabled ? null
+    : !cron ? "Chọn ít nhất 1 ngày chạy."
+      : !platforms.length ? "Chọn ít nhất 1 nền tảng để đăng theo lịch." : null;
+  if (problem) {
+    errorBox.textContent = problem;
+    errorBox.hidden = false;
+    return;
+  }
+  const saved = await scheduleRequest($("schedule-save"), async () => {
+    try {
+      await api("/api/schedule", { method: "PUT", body: JSON.stringify({ cron, platforms, enabled }) });
+    } catch (err) {
+      if (err instanceof AuthError) throw err;
+      throw new Error(`Lịch chưa hợp lệ — ${err.message}`);
+    }
+    form.dataset.dirty = "";
+  }, errorBox);
+  if (saved) toast("ok", "SCHEDULE SAVED", enabled ? `Lịch đã lưu: ${describeCron(cron)}` : "Đã tắt lịch tự động");
+}
+
+async function submitScheduleTopics(event) {
+  event.preventDefault();
+  const box = $("schedule-new-topics");
+  const topics = box.value.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!topics.length) return;
+  const added = await scheduleRequest($("schedule-add"), async () => {
+    const result = await api("/api/schedule/topics", { method: "POST", body: JSON.stringify({ topics }) });
+    toast("ok", "TOPICS ADDED", `Đã thêm ${result.added} chủ đề${result.added < topics.length ? ` (bỏ ${topics.length - result.added} chủ đề trùng)` : ""}`);
+  });
+  if (added) box.value = "";
+}
+
+async function onScheduleTopicClick(event) {
+  const button = event.target.closest("button[data-topic]");
+  if (!button || button.disabled) return;
+  await scheduleRequest(button, () => api(`/api/schedule/topics/${button.dataset.topic}`, { method: "DELETE" }));
+}
+
+function initScheduleEditor() {
+  const form = $("schedule-form");
+  form.addEventListener("submit", submitSchedule);
+  form.addEventListener("input", (event) => {
+    form.dataset.dirty = "1";
+    // Editing the simple controls means the advanced expression no longer applies.
+    if (event.target.id === "schedule-time" || event.target.closest("#schedule-days")) $("schedule-cron").value = "";
+  });
+  $("schedule-topic-form").addEventListener("submit", submitScheduleTopics);
+  $("schedule-topics").addEventListener("click", onScheduleTopicClick);
 }
 
 function tickCountdown() {
@@ -504,10 +667,11 @@ function buildJobCard(job, previousPercent, isNew) {
   const { steps, states, fraction } = sequenceFor(job);
   const platforms = job.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ") || "—";
   const meta = [
-    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt", mcp: "◈ agent", script: "✎ từ kịch bản đã sửa" }[job.source] || "▸ thủ công",
+    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt", mcp: "◈ agent", script: "✎ từ kịch bản đã sửa", "auto-retry": "↻ tự thử lại" }[job.source] || "▸ thủ công",
     job.dry_run ? "chạy thử" : platforms,
     formatTime(job.finished_at || job.started_at || job.created_at),
     job.cost_usd != null ? `chi phí ${money(job.cost_usd, job.cost_complete)}` : null,
+    job.retry_at ? `mất mạng — tự đăng lại lúc ${new Date(job.retry_at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}` : null,
   ].filter(Boolean).join("  ·  ");
 
   const sequence = el("div", { class: "sequence", role: "list", "aria-label": "Tiến trình" });
@@ -1275,6 +1439,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("run-form").addEventListener("submit", submitRun);
   $("reviews").addEventListener("click", onReviewClick);
   $("runs").addEventListener("click", onRunsClick);
+  initScheduleEditor();
   $("script-submit").addEventListener("click", submitScript);
   $("drafts").addEventListener("click", onDraftClick);
   $("drafts").addEventListener("input", onDraftInput);

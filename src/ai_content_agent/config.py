@@ -67,6 +67,8 @@ class Config:
 
     require_approval: bool = True
     max_posts_per_day: int = 3
+    upload_retries: int = 4
+    auto_retry_minutes: int = 5
     ai_disclosure: bool = True
     ai_disclosure_text: str = "Video có sử dụng AI"
     schedule_timezone: str = "Asia/Ho_Chi_Minh"

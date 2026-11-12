@@ -106,6 +106,42 @@
           <div class="panel-title"><span class="dot"></span>ORBIT SCHEDULE</div>
           <h2>Lịch tự động</h2>
           <div id="schedule"></div>
+          <details class="schedule-editor" id="schedule-editor" hidden>
+            <summary>⚙ Chỉnh lịch và danh sách chủ đề</summary>
+            <form id="schedule-form" novalidate>
+              <label class="switch"><input type="checkbox" id="schedule-enabled"><span class="track"><span class="thumb"></span></span> Bật lịch tự động</label>
+              <div class="schedule-when">
+                <label class="field">
+                  <span class="mono label">&gt; giờ_chạy</span>
+                  <input type="time" id="schedule-time" value="09:00">
+                </label>
+                <fieldset class="field">
+                  <legend class="mono label">&gt; các_ngày</legend>
+                  <div class="days" id="schedule-days"></div>
+                </fieldset>
+              </div>
+              <details class="schedule-advanced">
+                <summary>Cron nâng cao (thay cho giờ và ngày ở trên)</summary>
+                <input type="text" id="schedule-cron" maxlength="120" spellcheck="false" placeholder="30 8 * * mon,wed,fri">
+                <p class="muted small-note">5 trường: phút giờ ngày tháng thứ. Thứ ghi bằng tên: mon tue wed thu fri sat sun.</p>
+              </details>
+              <fieldset class="field">
+                <legend class="mono label">&gt; quỹ_đạo_đăng</legend>
+                <div class="platforms compact" id="schedule-platforms"></div>
+              </fieldset>
+              <p class="muted small-note" id="schedule-note"></p>
+              <p class="form-error" id="schedule-error" hidden></p>
+              <button type="submit" class="btn small ok" id="schedule-save">Lưu lịch</button>
+            </form>
+            <div class="schedule-topics">
+              <div class="mono label">&gt; danh_sách_chủ_đề <small id="schedule-topic-count"></small></div>
+              <ul class="topic-list" id="schedule-topics"></ul>
+              <form id="schedule-topic-form" novalidate>
+                <textarea id="schedule-new-topics" rows="3" maxlength="20000" placeholder="Mỗi dòng một chủ đề mới"></textarea>
+                <button type="submit" class="btn small" id="schedule-add">+ Thêm chủ đề</button>
+              </form>
+            </div>
+          </details>
         </section>
         <section class="panel">
           <div class="panel-title"><span class="dot live"></span>ACTIVE MISSIONS</div>

@@ -93,7 +93,8 @@ class AgentTools:
         self.history = HistoryStore(config.history_db_path)
         self.batches = BatchStore(config.history_db_path)
         runner = BatchRunner(self.batches, self._factory)
-        self.jobs = JobManager(self._factory, history=self.history, batch_runner=runner)
+        self.jobs = JobManager(self._factory, history=self.history, batch_runner=runner,
+                               auto_retry_minutes=config.auto_retry_minutes)
         self.worker = BatchWorker(self.jobs, runner).start() if start_worker else BatchWorker(self.jobs, runner)
 
     # ---------- guards ----------

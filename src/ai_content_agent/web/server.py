@@ -11,8 +11,8 @@ from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.batch import BatchRunner, BatchStore
 from ai_content_agent.pipeline.drafts import DraftStore
-from ai_content_agent.pipeline.scheduler import ALL_TOPICS_USED, TopicRotation, start_background
-from ai_content_agent.web.app import ScheduleInfo, create_app
+from ai_content_agent.pipeline.scheduler import ScheduleManager, ScheduleStore
+from ai_content_agent.web.app import create_app
 from ai_content_agent.web.jobs import BatchWorker, JobManager
 
 logger = logging.getLogger(__name__)
@@ -43,35 +43,27 @@ def serve(
     batches = BatchStore(config.history_db_path)
     runner = BatchRunner(batches, agent.build_pipeline)
     drafts = DraftStore(config.history_db_path)
-    jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner, drafts=drafts)
+    jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner, drafts=drafts,
+                      auto_retry_minutes=config.auto_retry_minutes)
     batch_worker = BatchWorker(jobs, runner).start()
 
-    schedule = None
-    if cron:
-        rotation = TopicRotation(topics or [])
+    def recently_published(topic: str) -> bool:
+        return history.has_recent_topic(topic, within_days=config.dedup_window_days)
 
-        def recently_published(topic: str) -> bool:
-            return history.has_recent_topic(topic, within_days=config.dedup_window_days)
-
-        def _scheduled() -> None:
-            topic = rotation.next(skip=recently_published)
-            if topic is None:
-                message = ALL_TOPICS_USED.format(days=config.dedup_window_days)
-                logger.warning(message)
-                history.record_error("(lịch tự động)", "schedule", message)
-                return
-            jobs.submit(topic, platforms or [], source="schedule")
-
-        schedule = ScheduleInfo(
-            cron=cron,
-            platforms=list(platforms or []),
-            rotation=rotation,
-            scheduler=start_background(
-                _scheduled, cron, timezone=config.schedule_timezone, state=history,
-                jitter_seconds=max(0, config.schedule_jitter_minutes) * 60,
-            ),
-            skip=recently_published,
-        )
+    store = ScheduleStore(history)
+    if cron:  # command-line flags seed the stored schedule; after that it is edited in the dashboard
+        store.add_topics(topics or [])
+        store.save_settings(cron=cron, platforms=list(platforms or []), enabled=True)
+    schedule = ScheduleManager(
+        store,
+        lambda topic, chosen: jobs.submit(topic, chosen, source="schedule"),
+        recently_done=recently_published,
+        on_empty=lambda message: history.record_error("(lịch tự động)", "schedule", message),
+        timezone=config.schedule_timezone,
+        jitter_seconds=max(0, config.schedule_jitter_minutes) * 60,
+        dedup_window_days=config.dedup_window_days,
+        state=history,
+    ).start()
 
     token = config.dashboard_token or secrets.token_urlsafe(24)
     app = create_app(
@@ -103,5 +95,4 @@ def serve(
     finally:
         batch_worker.stop()
         jobs.shutdown()
-        if schedule:
-            schedule.scheduler.shutdown(wait=False)
+        schedule.shutdown()

@@ -15,16 +15,22 @@ the pipeline caps YouTube at 100 posts per rolling 24 h.
 If an upload's outcome was never recorded (the process died mid-upload, or the
 response was lost), `find_existing` looks for the video in the channel's
 uploads before the pipeline uploads it again (2 quota units, not 1,600).
+
+Uploads are resumable and sent in chunks: when the connection drops, the
+next attempt asks YouTube how many bytes arrived and continues the same
+upload session from there, so a retry can never create a second video.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 
 from .base import Disclosure, Publisher, PublishResult
+from .http import DEFAULT_ATTEMPTS, NetworkDown, never_connected
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
 logger = logging.getLogger(__name__)
@@ -33,6 +39,9 @@ logger = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.force-ssl"]
 _PRIVACY = {"public", "unlisted", "private"}
 _TITLE_FORBIDDEN = str.maketrans("", "", "<>")  # YouTube rejects titles containing < or >
+_CHUNK_BYTES = 8 * 1024 * 1024  # resumable chunks must be multiples of 256 KiB
+_RETRY_STATUS = {500, 502, 503, 504}
+_sleep = time.sleep  # replaced in tests
 AUTHORIZED_AT = "authorized_at"  # extra key we keep in the token file; Google's loader ignores it
 TESTING_TOKEN_DAYS = 7
 
@@ -78,6 +87,7 @@ class YouTubePublisher(Publisher):
         *,
         privacy: str = "public",
         disclosure: Disclosure | None = None,
+        retries: int = DEFAULT_ATTEMPTS,
     ) -> None:
         if privacy not in _PRIVACY:
             raise ValueError(f"YOUTUBE_PRIVACY must be one of {sorted(_PRIVACY)}, got {privacy!r}")
@@ -85,9 +95,43 @@ class YouTubePublisher(Publisher):
         self._client_secret_file = client_secret_file
         self._privacy = privacy
         self._disclosure = disclosure or Disclosure()
+        self._retries = max(1, retries)
+
+    def _upload(self, request) -> dict:
+        """Send a resumable upload chunk by chunk, continuing the same session after network drops.
+        `retries` consecutive failures without progress give up; progress resets the count."""
+
+        import httplib2
+        from googleapiclient.errors import HttpError
+
+        failures, progressed = 0, False
+        while True:
+            try:
+                _status, response = request.next_chunk()
+            except HttpError as exc:
+                if exc.resp.status not in _RETRY_STATUS:
+                    raise
+                error: Exception = exc
+            except (httplib2.HttpLib2Error, OSError) as exc:  # DNS failure, reset, timeout, ...
+                error = exc
+            else:
+                progressed, failures = True, 0
+                if response is not None:
+                    return response
+                continue
+            failures += 1
+            if failures >= self._retries:
+                offline = isinstance(error, (httplib2.ServerNotFoundError, socket.gaierror)) or never_connected(error)
+                if offline and not progressed:
+                    raise NetworkDown(f"No network connection while uploading to YouTube: {error}") from error
+                raise error
+            wait = min(2.0 ** failures, 60.0)
+            logger.warning("YouTube upload interrupted (%s) — resuming in %.0fs (%d/%d)",
+                           error, wait, failures, self._retries)
+            _sleep(wait)
 
     def _get_service(self):
-        from google.auth.exceptions import RefreshError
+        from google.auth.exceptions import RefreshError, TransportError
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
         from googleapiclient.discovery import build
@@ -105,6 +149,8 @@ class YouTubePublisher(Publisher):
                 )
             try:
                 creds.refresh(Request())
+            except TransportError as exc:
+                raise NetworkDown(f"No network connection while refreshing the YouTube login: {exc}") from exc
             except RefreshError as exc:
                 age = token_age_days(self._token_file)
                 hint = (
@@ -144,8 +190,8 @@ class YouTubePublisher(Publisher):
                 "containsSyntheticMedia": self._disclosure.enabled,
             },
         }
-        media = MediaFileUpload(video.file_path, chunksize=-1, resumable=True)
-        response = service.videos().insert(part="snippet,status", body=body, media_body=media).execute()
+        media = MediaFileUpload(video.file_path, chunksize=_CHUNK_BYTES, resumable=True)
+        response = self._upload(service.videos().insert(part="snippet,status", body=body, media_body=media))
         video_id = response["id"]
 
         actual_privacy = response.get("status", {}).get("privacyStatus")
@@ -155,7 +201,9 @@ class YouTubePublisher(Publisher):
 
         if video.thumbnail_path:
             try:
-                service.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(video.thumbnail_path)).execute()
+                service.thumbnails().set(
+                    videoId=video_id, media_body=MediaFileUpload(video.thumbnail_path)
+                ).execute(num_retries=2)
             except Exception:
                 # Custom thumbnails require a phone-verified channel; not fatal.
                 logger.warning("Setting custom thumbnail failed for video %s", video_id, exc_info=True)
@@ -172,11 +220,11 @@ class YouTubePublisher(Publisher):
         """Newest upload with this title made since `since` (channel uploads playlist: 2 quota units)."""
 
         service = self._get_service()
-        channels = service.channels().list(part="contentDetails", mine=True).execute().get("items") or []
+        channels = service.channels().list(part="contentDetails", mine=True).execute(num_retries=2).get("items") or []
         if not channels:
             return None
         playlist = channels[0]["contentDetails"]["relatedPlaylists"]["uploads"]
-        items = service.playlistItems().list(part="snippet", playlistId=playlist, maxResults=25).execute()
+        items = service.playlistItems().list(part="snippet", playlistId=playlist, maxResults=25).execute(num_retries=2)
         cutoff = since - timedelta(minutes=10)  # clock skew between this machine and YouTube
         title = _title(script)
         for item in items.get("items") or []:
@@ -196,4 +244,4 @@ class YouTubePublisher(Publisher):
         return None
 
     def delete(self, remote_id: str) -> None:
-        self._get_service().videos().delete(id=remote_id).execute()
+        self._get_service().videos().delete(id=remote_id).execute(num_retries=2)

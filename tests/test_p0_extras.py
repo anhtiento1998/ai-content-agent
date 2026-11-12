@@ -305,7 +305,7 @@ class FakeChannel:
         self.last = kwargs
         return self
 
-    def execute(self):
+    def execute(self, num_retries=0):
         if "mine" in self.last:
             return {"items": [{"contentDetails": {"relatedPlaylists": {"uploads": "UU1"}}}]}
         return {"items": self.items}

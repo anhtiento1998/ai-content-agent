@@ -26,11 +26,17 @@ import os
 import time
 from pathlib import Path
 
-import requests
+import logging
 
+import requests
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout
+
+from . import http
 from .base import Disclosure, Publisher, PublishRejected, PublishResult
 from ai_content_agent.providers.base import ScriptResult, VideoResult
 
+logger = logging.getLogger(__name__)
 _API_BASE = "https://open.tiktokapis.com/v2"
 _MAX_SINGLE_CHUNK = 64 * 1024 * 1024
 _CHUNK_SIZE = 10 * 1024 * 1024
@@ -100,16 +106,20 @@ class TikTokTokens:
                 return self._static
             raise RuntimeError("TikTok token expired and no refresh credentials are configured")
         refresh_token = self._load().get("refresh_token") or self._initial_refresh
-        resp = requests.post(
-            f"{_API_BASE}/oauth/token/",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            data={
-                "client_key": self._client_key,
-                "client_secret": self._client_secret,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            },
-            timeout=30,
+        # Not repeated after a lost reply: TikTok may already have rotated the refresh token.
+        resp = http.send(
+            lambda: requests.post(
+                f"{_API_BASE}/oauth/token/",
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                data={
+                    "client_key": self._client_key,
+                    "client_secret": self._client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                },
+                timeout=30,
+            ),
+            "refreshing the TikTok token", idempotent=False,
         ).json()
         if "access_token" not in resp:
             raise RuntimeError(
@@ -146,10 +156,12 @@ class TikTokPublisher(Publisher):
         poll_interval: float = 15.0,
         poll_timeout: float = 180.0,
         mode: str = "direct",
+        retries: int = http.DEFAULT_ATTEMPTS,
     ) -> None:
         if mode not in MODES:
             raise ValueError(f"TIKTOK_MODE must be one of {', '.join(MODES)}, got {mode!r}")
         self._mode = mode
+        self._retries = retries
         self._tokens = tokens if isinstance(tokens, TikTokTokens) else TikTokTokens(access_token=tokens)
         self._privacy_level = privacy_level
         self._disclosure = disclosure or Disclosure()
@@ -157,14 +169,19 @@ class TikTokPublisher(Publisher):
         self._poll_timeout = poll_timeout
 
     def _call(self, path: str, body: dict, *, retry_auth: bool = True) -> dict:
-        resp = requests.post(
-            f"{_API_BASE}{path}",
-            headers={
-                "Authorization": f"Bearer {self._tokens.access_token()}",
-                "Content-Type": "application/json; charset=UTF-8",
-            },
-            json=body,
-            timeout=30,
+        # Safe to repeat: queries are read-only, and an init whose reply was lost only leaves an
+        # unused publish_id behind (no video is attached to it).
+        resp = http.send(
+            lambda: requests.post(
+                f"{_API_BASE}{path}",
+                headers={
+                    "Authorization": f"Bearer {self._tokens.access_token()}",
+                    "Content-Type": "application/json; charset=UTF-8",
+                },
+                json=body,
+                timeout=30,
+            ),
+            f"calling TikTok {path}", attempts=self._retries,
         ).json()
         error = resp.get("error", {}) or {}
         code = error.get("code", "ok")
@@ -225,18 +242,24 @@ class TikTokPublisher(Publisher):
                 start = index * chunk_size
                 end = size - 1 if index == chunk_count - 1 else start + chunk_size - 1
                 f.seek(start)
-                resp = requests.put(
-                    upload_url,
-                    headers={"Content-Type": "video/mp4", "Content-Range": f"bytes {start}-{end}/{size}"},
-                    data=f.read(end - start + 1),
-                    timeout=300,
+                chunk = f.read(end - start + 1)
+                headers = {"Content-Type": "video/mp4", "Content-Range": f"bytes {start}-{end}/{size}"}
+                # The same byte range can be sent again after a dropped connection.
+                resp = http.send(
+                    lambda: requests.put(upload_url, headers=headers, data=chunk, timeout=300),
+                    f"uploading chunk {index + 1}/{chunk_count} to TikTok", attempts=self._retries,
                 )
                 if resp.status_code not in (200, 201, 206):
                     raise RuntimeError(
                         f"TikTok upload of chunk {index + 1}/{chunk_count} failed: HTTP {resp.status_code} {resp.text[:200]}"
                     )
 
-        status, post_id = self._wait_for_publish(publish_id)
+        try:
+            status, post_id = self._wait_for_publish(publish_id)
+        except (RequestsConnectionError, Timeout, ConnectionError) as exc:
+            # The video is fully uploaded; TikTok will finish the post whether or not we can ask.
+            logger.warning("Lost the connection while waiting for TikTok to process %s: %s", publish_id, exc)
+            status, post_id = "processing", None
         username = creator.get("creator_username")
         url = f"https://www.tiktok.com/@{username}/video/{post_id}" if post_id and username else None
         return PublishResult(platform=self.name, remote_id=post_id or publish_id, url=url, status=status, raw=init)
