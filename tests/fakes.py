@@ -86,13 +86,34 @@ class FakeStudio:
             raise StudioStageError(self._fail_stage, f"scene 1: RuntimeError: {self._fail_stage} broke")
         Path(self._video_path).parent.mkdir(parents=True, exist_ok=True)
         Path(self._video_path).write_bytes(b"fake mp4")
-        storyboard = Storyboard(
-            title=f"Title for {topic}",
-            description="desc",
-            hashtags=["test"],
-            scenes=[Scene(narration="Hello world", visual_prompt="a cat")],
-        )
+        if checkpoint is not None and checkpoint.storyboard:
+            data = checkpoint.storyboard
+            storyboard = Storyboard(title=data["title"], description=data.get("description", ""),
+                                    hashtags=list(data.get("hashtags", [])),
+                                    scenes=[Scene(**scene) for scene in data["scenes"]])
+        else:
+            storyboard = Storyboard(
+                title=f"Title for {topic}",
+                description="desc",
+                hashtags=["test"],
+                scenes=[Scene(narration="Hello world", visual_prompt="a cat")],
+            )
         return storyboard, VideoResult(file_path=self._video_path, duration_seconds=3.0)
+
+
+def _fake_storyboard(topic):
+    return Storyboard(title=f"Title for {topic}", description="desc", hashtags=["test"],
+                      scenes=[Scene(narration="Hello world", visual_prompt="a cat")])
+
+
+def _draft(self, topic, *, style="", plan=None, review=None):
+    self.drafts = getattr(self, "drafts", 0) + 1
+    if self._fail_stage == "script":
+        raise StudioStageError("script", "RuntimeError: script broke")
+    return _fake_storyboard(topic), {"usd": 0.0, "complete": True, "by_kind": {}, "items": []}
+
+
+FakeStudio.draft = _draft
 
 
 class FakePublisher(Publisher):

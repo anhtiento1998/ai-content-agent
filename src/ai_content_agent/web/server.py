@@ -10,6 +10,7 @@ from ai_content_agent.agent import ContentAgent
 from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.batch import BatchRunner, BatchStore
+from ai_content_agent.pipeline.drafts import DraftStore
 from ai_content_agent.pipeline.scheduler import ALL_TOPICS_USED, TopicRotation, start_background
 from ai_content_agent.web.app import ScheduleInfo, create_app
 from ai_content_agent.web.jobs import BatchWorker, JobManager
@@ -41,7 +42,8 @@ def serve(
     history = HistoryStore(config.history_db_path)
     batches = BatchStore(config.history_db_path)
     runner = BatchRunner(batches, agent.build_pipeline)
-    jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner)
+    drafts = DraftStore(config.history_db_path)
+    jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner, drafts=drafts)
     batch_worker = BatchWorker(jobs, runner).start()
 
     schedule = None
@@ -81,6 +83,7 @@ def serve(
         capcut_exporter=agent.capcut_exporter(),
         pipeline_factory=agent.build_pipeline,
         batches=batches,
+        drafts=drafts,
     )
 
     if not _is_loopback(host):

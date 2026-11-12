@@ -225,4 +225,7 @@ class Config:
         if self.tiktok_mode == "direct" and self.tiktok_privacy_level == "SELF_ONLY":
             warning = ("Đang đăng chế độ SELF_ONLY (chỉ mình bạn xem) — app chưa được TikTok duyệt chỉ đăng được "
                        "chế độ này. Dùng TIKTOK_MODE=inbox hoặc TIKTOK_VIA=upload-post để đăng công khai.")
-        return entry(ready, None, warning)
+        note = None
+        if not ready and self.tiktok_client_key and self.tiktok_client_secret:
+            note = "Chạy `ai-content-agent tiktok-auth` một lần để đăng nhập TikTok"
+        return entry(ready, note, warning)

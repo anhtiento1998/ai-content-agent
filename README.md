@@ -272,6 +272,21 @@ ai-content-agent run "5 mẹo tiết kiệm điện mùa hè" --dry-run
 
 `--dry-run` dựng video nhưng không đăng, in ra đường dẫn `final.mp4`.
 
+## Sửa kịch bản trước khi dựng (Bàn kịch bản)
+
+Viết kịch bản chỉ tốn một lần gọi AI; giọng đọc và hình mới là phần đắt.
+Trên dashboard, bấm **✎ Viết kịch bản trước, sửa rồi mới dựng** thay cho
+*Khởi động*: kịch bản hiện ở khu **Bàn kịch bản** để bạn sửa từng cảnh —
+lời đọc, chữ trên màn hình, mô tả hình ảnh, tiêu đề, hashtag; thêm hoặc xoá
+cảnh (tối đa 12). Bộ đếm cho biết số từ và thời lượng đọc ước tính.
+
+- **Lưu** để giữ bản sửa (lưu trong `HISTORY_DB_PATH`, tắt app không mất).
+- **Dựng thử** dựng video không đăng, kịch bản vẫn ở đó để sửa tiếp.
+- **▶ Dựng video** dựng từ **đúng** kịch bản đã sửa — AI không viết lại —
+  rồi video vào khu Chờ duyệt như thường. Dựng lỗi thì kịch bản vẫn còn.
+- Cảnh thêm tay mà để trống mô tả hình thì app tự lấy lời đọc làm mô tả.
+- Phần chữ đang gõ không bị mất khi trang tự cập nhật.
+
 ## Tạo video đầy đủ (không đăng)
 
 ```bash
@@ -540,11 +555,24 @@ thời điểm bắt đầu/độ dài từng cảnh.
 1. Tạo app trên [TikTok for Developers](https://developers.tiktok.com/),
    bật sản phẩm **Content Posting API** (Direct Post).
 2. Xin quyền `video.publish`.
-3. Điền `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET` và một
-   `TIKTOK_REFRESH_TOKEN` lấy từ luồng OAuth của app. App tự làm mới access
-   token (TikTok cấp token ngắn hạn — tài liệu ghi 2 h hoặc 24 h) và lưu
-   refresh token mới vào `tiktok_token.json`. `TIKTOK_ACCESS_TOKEN` tĩnh chỉ
-   là phương án tạm vì sẽ hết hạn trong vài giờ.
+3. Điền `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, rồi đăng nhập một lần:
+   ```bash
+   ai-content-agent tiktok-auth
+   ```
+   Lệnh in ra **Redirect URI** (mặc định `http://localhost:8721/callback/`)
+   — thêm đúng địa chỉ đó vào phần *Login Kit* của app TikTok trước, rồi chạy
+   lại. Trình duyệt mở trang TikTok, bạn bấm đồng ý, token được lưu vào
+   `tiktok_token.json` và tự làm mới từ đó (không cần `TIKTOK_REFRESH_TOKEN`
+   nữa). Đổi cổng bằng `--port`. Quyền xin mặc định theo `TIKTOK_MODE`
+   (`video.publish` hoặc `video.upload`), đổi bằng `--scope`.
+   - App TikTok loại **Web** chỉ cho redirect về địa chỉ https đã đăng ký:
+     chạy `ai-content-agent tiktok-auth --redirect-uri https://ten-mien/cua-ban`,
+     sau khi đồng ý thì copy địa chỉ trình duyệt đang đứng (có `?code=...`)
+     dán vào terminal.
+   - Lệnh viết theo luồng OAuth TikTok đã công bố (app Desktop dùng PKCE với
+     mã băm dạng hex — khác chuẩn; có `--pkce base64url|none` nếu TikTok đổi),
+     **chưa chạy với app thật**. `TIKTOK_ACCESS_TOKEN` tĩnh chỉ là phương án
+     tạm vì hết hạn trong vài giờ.
 4. Khi app chưa được TikTok audit, video chỉ đăng ở chế độ riêng tư
    (`TIKTOK_PRIVACY_LEVEL=SELF_ONLY`), tối đa 5 người dùng/24 h. Audit xong
    thì đổi thành `PUBLIC_TO_EVERYONE`; mỗi tài khoản đăng được khoảng 15
@@ -639,8 +667,8 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] P2: CapCut 9.x (dò phiên bản, khuôn từ app, chặn 10.x), gói dựng FCPXML, TTS tiếng Việt chạy trên máy, tự dò NVENC.
 - [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
 - [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).
-- [ ] Xem trước video + sửa kịch bản từng cảnh ngay trên dashboard trước
-      khi dựng.
+- [x] Sửa kịch bản từng cảnh ngay trên dashboard trước khi dựng (Bàn kịch bản).
+- [x] Lệnh `tiktok-auth` đăng nhập TikTok một lần (chưa chạy với app thật).
 - [x] Phụ đề theo từng từ (karaoke), chuẩn hoá NFC, đọc số tiếng Việt, font đóng gói.
 - [x] Căn thời gian từng từ + điểm phát âm bằng faster-whisper (tuỳ chọn, chưa thử với model thật).
 - [x] Sản xuất hàng loạt có hàng đợi bền và checkpoint.

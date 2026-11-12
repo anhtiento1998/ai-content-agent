@@ -14,6 +14,7 @@ const JOB_STATUS = {
   skipped: ["Bỏ qua", "neutral"],
   failed: ["Thất bại", "bad"],
   review: ["Chờ duyệt", "warn"],
+  scripted: ["Chờ sửa kịch bản", "warn"],
 };
 const RUN_STATUS = {
   pending_review: ["Chờ duyệt", "warn"],
@@ -22,7 +23,7 @@ const RUN_STATUS = {
   failed: ["Thất bại", "bad"],
   rejected: ["Từ chối", "neutral"],
 };
-const TERMINAL = new Set(["succeeded", "partial", "skipped", "failed", "review"]);
+const TERMINAL = new Set(["succeeded", "partial", "skipped", "failed", "review", "scripted"]);
 const STAGES = {
   setup: "Khởi tạo",
   schedule: "Lịch tự động",
@@ -462,10 +463,14 @@ function tickCountdown() {
 /** Per-step state for the launch sequence, derived from real job progress. */
 function sequenceFor(job) {
   // Publish jobs (approve/retry) only have the publish step; dry runs stop after rendering.
-  const steps = job.kind === "publish" ? SEQUENCE.slice(3) : job.dry_run ? SEQUENCE.slice(0, 3) : SEQUENCE;
+  // Script jobs stop after the storyboard, which then waits on the script desk.
+  const steps = job.kind === "publish" ? SEQUENCE.slice(3)
+    : job.kind === "script" ? SEQUENCE.slice(0, 1)
+      : job.dry_run ? SEQUENCE.slice(0, 3) : SEQUENCE;
   const index = (key) => Math.max(0, steps.findIndex(([k]) => k === key));
   let states;
   let current = -1;
+  if (job.status === "scripted") return { steps, states: steps.map(() => "done"), fraction: 1 };
   if (job.status === "review") {
     states = steps.map(([k]) => (k === "publish" ? "warn" : "done"));
     return { steps, states, fraction: (steps.length - 1) / steps.length };
@@ -499,7 +504,7 @@ function buildJobCard(job, previousPercent, isNew) {
   const { steps, states, fraction } = sequenceFor(job);
   const platforms = job.platforms.map((p) => PLATFORM_LABELS[p] || p).join(", ") || "—";
   const meta = [
-    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt", mcp: "◈ agent" }[job.source] || "▸ thủ công",
+    { schedule: "⟲ theo lịch", review: "✓ duyệt & đăng", retry: "↻ đăng lại", batch: "▦ hàng loạt", mcp: "◈ agent", script: "✎ từ kịch bản đã sửa" }[job.source] || "▸ thủ công",
     job.dry_run ? "chạy thử" : platforms,
     formatTime(job.finished_at || job.started_at || job.created_at),
     job.cost_usd != null ? `chi phí ${money(job.cost_usd, job.cost_complete)}` : null,
@@ -608,6 +613,7 @@ function announce(job, previous) {
     skipped: ["info", "MISSION SKIPPED", `Chủ đề đã đăng gần đây: ${job.topic}`],
     failed: ["bad", "MISSION FAILED", `${job.topic} — ${STAGES[job.failed_stage] || "lỗi"}`],
     review: ["warn", "AWAITING REVIEW", `Video đã dựng xong, chờ bạn duyệt: ${job.topic}`],
+    scripted: ["info", "SCRIPT READY", `Kịch bản đã viết xong — sửa ở Bàn kịch bản rồi bấm Dựng video: ${job.topic}`],
   };
   const message = messages[job.status];
   if (message) toast(...message);
@@ -847,6 +853,195 @@ async function onRunsClick(event) {
   }
 }
 
+// ---------- script desk ----------
+
+const WORDS_PER_SECOND = 2.5;
+const MAX_SCENES = 12;
+
+function sceneRow(scene = {}) {
+  return el("li", { class: "scene-row" }, [
+    el("div", { class: "scene-head" }, [
+      el("span", { class: "mono label scene-number" }),
+      el("button", { type: "button", class: "btn small bad", "data-draft-action": "remove-scene", title: "Xoá cảnh này", text: "✕" }),
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { class: "mono label", text: "> lời_đọc" }),
+      el("textarea", { class: "scene-narration", rows: "2", maxlength: "600", text: scene.narration || "" }),
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { class: "mono label" }, ["> chữ_trên_màn_hình ", el("small", { text: "(tuỳ chọn, tối đa 6 từ)" })]),
+      el("input", { type: "text", class: "scene-overlay", maxlength: "60", value: scene.on_screen_text || "" }),
+    ]),
+    el("details", {}, [
+      el("summary", { text: "Mô tả hình ảnh (tiếng Anh, gửi cho engine tạo hình)" }),
+      el("textarea", { class: "scene-prompt", rows: "2", maxlength: "800", text: scene.visual_prompt || "" }),
+    ]),
+  ]);
+}
+
+function draftStats(card) {
+  const rows = [...card.querySelectorAll(".scene-row")];
+  rows.forEach((row, i) => { row.querySelector(".scene-number").textContent = `CẢNH ${i + 1}`; });
+  const words = rows.reduce((n, row) => n + row.querySelector(".scene-narration").value.trim().split(/\s+/).filter(Boolean).length, 0);
+  card.querySelector(".draft-stats").textContent = `${rows.length} cảnh · ${words} từ · ≈ ${Math.round(words / WORDS_PER_SECOND)} giây đọc`;
+  card.querySelector('[data-draft-action="add-scene"]').disabled = rows.length >= MAX_SCENES;
+  for (const button of card.querySelectorAll('[data-draft-action="remove-scene"]')) button.disabled = rows.length <= 1;
+}
+
+function buildDraftCard(draft) {
+  const board = draft.storyboard;
+  const busy = draft.status === "rendering";
+  const notes = [
+    draft.variation && draft.variation.hook ? HOOK_LABELS[draft.variation.hook] || draft.variation.hook : null,
+    draft.similar_to ? `giống #${draft.similar_to}: ${Math.round((draft.similarity || 0) * 100)}%` : null,
+    draft.cost_usd != null ? `viết kịch bản: ${money(draft.cost_usd)}` : null,
+    draft.edited ? "đã sửa" : null,
+  ].filter(Boolean).join(" · ");
+  const card = el("article", { class: `draft-card${busy ? " busy" : ""}`, "data-draft": String(draft.id) }, [
+    el("div", { class: "batch-head" }, [
+      el("div", { class: "job-meta", text: `#${draft.id} · ${draft.topic} · ${formatTime(draft.created_at)}${notes ? ` · ${notes}` : ""}` }),
+      busy ? el("span", { class: "badge info", text: "Đang dựng" }) : null,
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { class: "mono label", text: "> tiêu_đề" }),
+      el("input", { type: "text", class: "draft-title", maxlength: "100", value: board.title }),
+    ]),
+    el("ol", { class: "scene-list" }, board.scenes.map(sceneRow)),
+    el("button", { type: "button", class: "btn small", "data-draft-action": "add-scene", text: "+ Thêm cảnh" }),
+    el("label", { class: "field" }, [
+      el("span", { class: "mono label", text: "> mô_tả" }),
+      el("input", { type: "text", class: "draft-description", maxlength: "500", value: board.description || "" }),
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { class: "mono label" }, ["> hashtag ", el("small", { text: "(cách nhau bằng dấu cách)" })]),
+      el("input", { type: "text", class: "draft-hashtags", maxlength: "200", value: (board.hashtags || []).join(" ") }),
+    ]),
+    el("div", { class: "draft-foot" }, [
+      el("span", { class: "muted draft-stats" }),
+      el("div", { class: "row-actions" }, [
+        el("button", { type: "button", class: "btn small", "data-draft-action": "save", text: "Lưu" }),
+        el("button", { type: "button", class: "btn small", "data-draft-action": "preview", title: "Dựng thử, không đăng; kịch bản vẫn ở đây để sửa tiếp", text: "Dựng thử" }),
+        el("button", { type: "button", class: "btn small ok", "data-draft-action": "render", title: "Lưu rồi dựng video từ đúng kịch bản này (dùng nền tảng đang chọn ở LAUNCH PAD)", text: "▶ Dựng video" }),
+        el("button", { type: "button", class: "btn small bad", "data-draft-action": "discard", text: "Xoá" }),
+      ]),
+    ]),
+  ]);
+  if (busy) for (const control of card.querySelectorAll("input, textarea, button")) control.disabled = true;
+  draftStats(card);
+  return card;
+}
+
+function collectDraft(card) {
+  return {
+    title: card.querySelector(".draft-title").value,
+    description: card.querySelector(".draft-description").value,
+    hashtags: card.querySelector(".draft-hashtags").value.split(/[\s,]+/).filter(Boolean),
+    scenes: [...card.querySelectorAll(".scene-row")].map((row) => ({
+      narration: row.querySelector(".scene-narration").value,
+      visual_prompt: row.querySelector(".scene-prompt").value,
+      on_screen_text: row.querySelector(".scene-overlay").value,
+    })),
+  };
+}
+
+function renderDrafts(drafts) {
+  const panel = $("script-panel");
+  panel.hidden = drafts === null || (drafts.length === 0 && !state.hadDrafts);
+  if (drafts === null) return;
+  if (drafts.length) state.hadDrafts = true;
+  const count = $("draft-count");
+  count.textContent = String(drafts.length);
+  count.classList.toggle("zero", drafts.length === 0);
+  if (!changed("drafts", drafts.map((d) => [d.id, d.status, d.updated_at]))) return;
+  // Cards with unsaved typing are kept as they are; polling must never wipe what the user wrote.
+  const existing = new Map([...document.querySelectorAll("#drafts .draft-card")].map((c) => [c.dataset.draft, c]));
+  $("drafts").replaceChildren(...(drafts.length ? drafts.map((draft) => {
+    const current = existing.get(String(draft.id));
+    return current && current.dataset.dirty === "1" && draft.status === "open" ? current : buildDraftCard(draft);
+  }) : [el("div", { class: "empty-state", text: "// không còn kịch bản nào chờ sửa" })]));
+}
+
+async function saveDraft(card) {
+  const draft = await api(`/api/drafts/${card.dataset.draft}`, { method: "PUT", body: JSON.stringify(collectDraft(card)) });
+  card.dataset.dirty = "";
+  return draft;
+}
+
+async function onDraftClick(event) {
+  const button = event.target.closest("button[data-draft-action]");
+  if (!button || button.disabled) return;
+  const card = button.closest(".draft-card");
+  const id = card.dataset.draft;
+  const action = button.dataset.draftAction;
+  if (action === "add-scene" || action === "remove-scene") {
+    if (action === "add-scene") card.querySelector(".scene-list").append(sceneRow());
+    else button.closest(".scene-row").remove();
+    card.dataset.dirty = "1";
+    draftStats(card);
+    return;
+  }
+  if (action === "discard" && !window.confirm(`Xoá kịch bản #${id}? Không khôi phục được.`)) return;
+  button.disabled = true;
+  try {
+    if (action === "save") {
+      await saveDraft(card);
+      toast("ok", "SCRIPT SAVED", `Đã lưu kịch bản #${id}`);
+    } else if (action === "discard") {
+      await api(`/api/drafts/${id}`, { method: "DELETE" });
+      card.dataset.dirty = "";
+    } else {
+      const dryRun = action === "preview";
+      const platforms = [...document.querySelectorAll('input[name="platform"]:checked')].map((i) => i.value);
+      await saveDraft(card);
+      await api(`/api/drafts/${id}/render`, { method: "POST", body: JSON.stringify({ platforms, dry_run: dryRun }) });
+      toast("info", "LIFTOFF", dryRun ? `Đang dựng thử kịch bản #${id}` : `Đang dựng video từ kịch bản #${id}`);
+    }
+    state.signatures.drafts = undefined;
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else toast("bad", "SCRIPT DESK", err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function onDraftInput(event) {
+  const card = event.target.closest(".draft-card");
+  if (!card) return;
+  card.dataset.dirty = "1";
+  if (event.target.classList.contains("scene-narration")) draftStats(card);
+}
+
+async function submitScript() {
+  const errorBox = $("run-error");
+  const topic = $("topic").value.trim();
+  errorBox.hidden = true;
+  if (!topic) {
+    errorBox.textContent = "Nhập chủ đề trước đã.";
+    errorBox.hidden = false;
+    return;
+  }
+  const button = $("script-submit");
+  button.disabled = true;
+  try {
+    const platforms = [...document.querySelectorAll('input[name="platform"]:checked')].map((i) => i.value);
+    await api("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ topic, platforms, style: $("style").value.trim(), force: $("force").checked, script_only: true }),
+    });
+    toast("info", "WRITING SCRIPT", `Đang viết kịch bản: ${topic}`);
+    $("topic").value = "";
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    errorBox.textContent = `Không gửi được: ${err.message || "lỗi không xác định"}`;
+    errorBox.hidden = false;
+  } finally {
+    button.disabled = false;
+  }
+}
+
 // ---------- batches ----------
 
 const BATCH_STATUS = { active: ["Đang chạy", "info"], paused: ["Tạm dừng", "neutral"], finished: ["Xong", "ok"] };
@@ -996,10 +1191,10 @@ async function refresh() {
       renderConfig(await api("/api/config"));
       state.configLoaded = true;
     }
-    const [stats, runs, errors, jobList, schedule, reviews, batches] = await Promise.all([
+    const optional = (path) => api(path).catch((err) => { if (err instanceof AuthError) throw err; return null; });
+    const [stats, runs, errors, jobList, schedule, reviews, batches, drafts] = await Promise.all([
       api("/api/stats"), api("/api/runs"), api("/api/errors"), api("/api/jobs"), api("/api/schedule"),
-      api("/api/reviews"),
-      api("/api/batches").catch((err) => { if (err instanceof AuthError) throw err; return null; }),
+      api("/api/reviews"), optional("/api/batches"), optional("/api/drafts"),
     ]);
     jobs = jobList;
     showApp();
@@ -1010,6 +1205,8 @@ async function refresh() {
     renderSchedule(schedule);
     renderReviews(reviews);
     renderBatches(batches);
+    renderDrafts(drafts);
+    $("script-submit").hidden = drafts === null;
     state.firstLoad = false;
     $("updated-at").textContent = `telemetry synced ${new Date().toLocaleTimeString("vi-VN")}`;
   } catch (err) {
@@ -1078,6 +1275,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("run-form").addEventListener("submit", submitRun);
   $("reviews").addEventListener("click", onReviewClick);
   $("runs").addEventListener("click", onRunsClick);
+  $("script-submit").addEventListener("click", submitScript);
+  $("drafts").addEventListener("click", onDraftClick);
+  $("drafts").addEventListener("input", onDraftInput);
   $("batch-form").addEventListener("submit", submitBatch);
   $("batches").addEventListener("click", onBatchClick);
   $("jobs").addEventListener("click", (event) => {

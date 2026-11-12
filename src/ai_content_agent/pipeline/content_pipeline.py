@@ -29,7 +29,8 @@ from ai_content_agent.publishers.base import PLATFORM_DAILY_LIMITS, Publisher, P
 from ai_content_agent.studio import StudioStageError, VideoStudio
 from ai_content_agent.studio.provenance import publish_blocker
 from ai_content_agent.studio.studio import Checkpoint, Progress
-from ai_content_agent.studio.variation import SIMILARITY_THRESHOLD, Variator, most_similar
+from ai_content_agent.studio.storyboard import Storyboard
+from ai_content_agent.studio.variation import SIMILARITY_THRESHOLD, VariationPlan, Variator, most_similar
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,17 @@ class RunOutcome:
     similarity: float | None = None
     similar_to: int | None = None
     cost: dict | None = None
+
+
+@dataclass
+class ScriptDraft:
+    """A storyboard written but not rendered yet, for a human to edit."""
+
+    storyboard: Storyboard
+    plan: VariationPlan | None = None
+    cost: dict | None = None
+    similarity: float | None = None
+    similar_to: int | None = None
 
 
 class ContentPipeline:
@@ -113,10 +125,12 @@ class ContentPipeline:
         force: bool = False,
         progress: Progress | None = None,
         checkpoint: Checkpoint | None = None,
+        plan: VariationPlan | None = None,
     ) -> RunOutcome:
         """Produce a video for `topic`; then queue it for review, or publish it right away.
         `progress(stage, done, total)` reports script -> assets -> render -> publish.
-        `checkpoint` lets a batch resume a crashed run without paying for finished steps."""
+        `checkpoint` lets a batch resume a crashed run without paying for finished steps, and
+        carries an edited storyboard (with the `plan` it was written under) from the script desk."""
 
         report = progress or _no_progress
         if self._studio is None:
@@ -130,33 +144,14 @@ class ContentPipeline:
             )
             return RunOutcome(skipped=True)
 
-        if self._daily_budget_usd and self._history:
-            spent = self._history.cost_since(24)
-            if spent >= self._daily_budget_usd:
-                error = StudioStageError(
-                    "budget", f"Daily budget of ${self._daily_budget_usd:.2f} reached (${spent:.2f} spent on AI "
-                              "engines in the last 24 h) — raise DAILY_BUDGET_USD or wait")
-                self._record_error(topic, "budget", error)
-                raise error
-
-        plan = None
-        if self._variator:
-            music = getattr(self._studio, "music", None)
-            recent = self._history.recent_variations() if self._history else []
-            plan = self._variator.plan(recent, music.usable_tracks() if music else [])
-        corpus = self._history.recent_scripts() if self._history and self._similarity_threshold else []
-
-        def review(candidate) -> str | None:
-            run_id, score = most_similar(candidate.to_script_result().script, corpus)
-            if run_id is not None and score >= self._similarity_threshold:
-                logger.warning("Script is %.0f%% similar to run #%s", score * 100, run_id)
-                return dict(corpus)[run_id]
-            return None
+        self._check_budget(topic)
+        plan = plan or self._new_plan()
+        corpus = self._corpus()
 
         try:
             storyboard, video = self._studio.produce(
                 topic, style=style, progress=report, plan=plan, checkpoint=checkpoint,
-                review=review if corpus else None,
+                review=self._reviewer(corpus),
             )
         except StudioStageError as exc:
             self._record_error(topic, exc.stage, exc)
@@ -219,6 +214,65 @@ class ContentPipeline:
             return outcome
         outcome.published = self._publish(outcome.run_id, topic, script, video, report)
         return outcome
+
+    def write_script(self, topic: str, *, style: str = "", force: bool = False) -> ScriptDraft | None:
+        """Write only the storyboard, with the same variation plan and similarity check as a full run.
+        None when the topic is a recent duplicate and `force` is off."""
+
+        if self._studio is None:
+            raise ValueError("This pipeline was built publish-only; it cannot write scripts")
+        if not force and self.is_duplicate(topic):
+            return None
+        self._check_budget(topic)
+        plan, corpus = self._new_plan(), self._corpus()
+        try:
+            storyboard, cost = self._studio.draft(topic, style=style, plan=plan, review=self._reviewer(corpus))
+        except StudioStageError as exc:
+            self._record_error(topic, exc.stage, exc)
+            if self._history:
+                self._history.record_cost(topic, exc.cost)
+            raise
+        if self._history:
+            self._history.record_cost(topic, cost)
+        similar_to, similarity = (most_similar(storyboard.to_script_result().script, corpus) if corpus
+                                  else (None, 0.0))
+        return ScriptDraft(storyboard, plan, cost, round(similarity, 3) if similar_to else None, similar_to)
+
+    def _check_budget(self, topic: str) -> None:
+        if not (self._daily_budget_usd and self._history):
+            return
+        spent = self._history.cost_since(24)
+        if spent >= self._daily_budget_usd:
+            error = StudioStageError(
+                "budget", f"Daily budget of ${self._daily_budget_usd:.2f} reached (${spent:.2f} spent on AI "
+                          "engines in the last 24 h) — raise DAILY_BUDGET_USD or wait")
+            self._record_error(topic, "budget", error)
+            raise error
+
+    def _new_plan(self) -> VariationPlan | None:
+        if not self._variator:
+            return None
+        music = getattr(self._studio, "music", None)
+        recent = self._history.recent_variations() if self._history else []
+        return self._variator.plan(recent, music.usable_tracks() if music else [])
+
+    def _corpus(self) -> list[tuple[int, str]]:
+        return self._history.recent_scripts() if self._history and self._similarity_threshold else []
+
+    def _reviewer(self, corpus):
+        """A studio review callback: the text of a too-similar earlier script, or None to accept."""
+
+        if not corpus:
+            return None
+
+        def review(candidate) -> str | None:
+            run_id, score = most_similar(candidate.to_script_result().script, corpus)
+            if run_id is not None and score >= self._similarity_threshold:
+                logger.warning("Script is %.0f%% similar to run #%s", score * 100, run_id)
+                return dict(corpus)[run_id]
+            return None
+
+        return review
 
     def _block(self, run_id: int | None, topic: str, message: str) -> None:
         logger.error(message)

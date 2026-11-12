@@ -23,6 +23,7 @@ from ai_content_agent.export.edit_bundle import EditBundleExporter
 from ai_content_agent.history import PENDING, REJECTED, HistoryStore
 from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchStore, batch_summary, parse_manifest
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
+from ai_content_agent.pipeline.drafts import DISCARDED, OPEN, DraftStore, clean_storyboard
 from ai_content_agent.pipeline.scheduler import TopicRotation
 from ai_content_agent.publishers import PUBLISHERS
 from ai_content_agent.web.jobs import JobManager
@@ -45,16 +46,35 @@ class RunRequest(BaseModel):
     style: str = Field("", max_length=300)
     dry_run: bool = False
     force: bool = False
+    script_only: bool = False  # write the storyboard and stop, so it can be edited before rendering
 
     @model_validator(mode="after")
     def _needs_platform_unless_dry_run(self) -> "RunRequest":
         self.topic = self.topic.strip()
         if not self.topic:
             raise ValueError("topic must not be blank")
-        if not self.dry_run and not self.platforms:
+        if not self.dry_run and not self.script_only and not self.platforms:
             raise ValueError("choose at least one platform, or enable dry_run")
         self.platforms = list(dict.fromkeys(self.platforms))
         return self
+
+
+class SceneEdit(BaseModel):
+    narration: str = Field(max_length=2000)
+    visual_prompt: str = Field(max_length=2000)
+    on_screen_text: str = Field("", max_length=300)
+
+
+class DraftEdit(BaseModel):
+    title: str = Field(max_length=300)
+    description: str = Field("", max_length=1000)
+    hashtags: list[str] = Field(default_factory=list, max_length=20)
+    scenes: list[SceneEdit] = Field(min_length=1, max_length=20)
+
+
+class RenderRequest(BaseModel):
+    platforms: list[Platform] = Field(default_factory=list)
+    dry_run: bool = False
 
 
 class BatchRequest(BaseModel):
@@ -104,6 +124,7 @@ def create_app(
     capcut_exporter: CapCutExporter | None = None,
     pipeline_factory: Callable[..., ContentPipeline] | None = None,
     batches: BatchStore | None = None,
+    drafts: DraftStore | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Content Agent", docs_url=None, redoc_url=None, openapi_url=None)
     expected = token.encode()
@@ -131,6 +152,9 @@ def create_app(
 
     @api.post("/runs", status_code=202)
     def create_run(body: RunRequest) -> dict:
+        if body.script_only:
+            _drafts()
+            return asdict(jobs.submit_script(body.topic, body.platforms, style=body.style, force=body.force))
         job = jobs.submit(body.topic, body.platforms, style=body.style, dry_run=body.dry_run, force=body.force)
         return asdict(job)
 
@@ -209,6 +233,47 @@ def create_app(
                                  platform=body.platform)
             raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {exc}") from exc
         return {"status": "taken_down", "platform": body.platform}
+
+    def _drafts() -> DraftStore:
+        if drafts is None:
+            raise HTTPException(status_code=501, detail="The script desk is not available on this server")
+        return drafts
+
+    def _open_draft(draft_id: int):
+        draft = _drafts().get(draft_id)
+        if draft is None or draft.status == DISCARDED:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        if draft.status != OPEN:
+            raise HTTPException(status_code=409, detail=f"Draft is {draft.status}; it can no longer be changed")
+        return draft
+
+    @api.get("/drafts")
+    def list_drafts() -> list[dict]:
+        return [draft.summary() for draft in _drafts().open_drafts()]
+
+    @api.put("/drafts/{draft_id}")
+    def save_draft(draft_id: int, body: DraftEdit) -> dict:
+        _open_draft(draft_id)
+        try:
+            storyboard = clean_storyboard(body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _drafts().update(draft_id, storyboard)
+        return _drafts().get(draft_id).summary()
+
+    @api.post("/drafts/{draft_id}/render", status_code=202)
+    def render_draft(draft_id: int, body: RenderRequest) -> dict:
+        draft = _open_draft(draft_id)
+        platforms = list(dict.fromkeys(body.platforms or draft.platforms))
+        if not body.dry_run and not platforms:
+            raise HTTPException(status_code=422, detail="choose at least one platform, or enable dry_run")
+        return asdict(jobs.submit_render(draft, platforms, dry_run=body.dry_run))
+
+    @api.delete("/drafts/{draft_id}")
+    def discard_draft(draft_id: int) -> dict:
+        _open_draft(draft_id)
+        _drafts().set_status(draft_id, DISCARDED)
+        return {"status": DISCARDED}
 
     def _batches() -> BatchStore:
         if batches is None:

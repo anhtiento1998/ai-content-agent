@@ -500,3 +500,18 @@ textarea { resize: vertical; min-height: 110px; font-family: var(--mono); font-s
 .batch-items li { font-size: 0.85rem; overflow-wrap: anywhere; }
 .batch-items .badge { margin-right: 8px; }
 .batch-error { font-size: 0.75rem; margin-top: 2px; }
+
+/* ---------- script desk ---------- */
+.script-btn { margin-top: 10px; width: 100%; justify-content: center; }
+.drafts { display: grid; gap: 14px; }
+.draft-card { padding: 16px; border: 1px solid var(--panel-border); border-radius: 12px; background: rgba(4, 6, 18, 0.45); display: grid; gap: 10px; min-width: 0; }
+.draft-card.busy { opacity: 0.6; }
+.draft-card .field { margin-bottom: 8px; }
+.scene-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.scene-row { padding: 12px; border-left: 2px solid rgba(77, 227, 255, 0.45); background: rgba(77, 227, 255, 0.04); border-radius: 0 10px 10px 0; min-width: 0; }
+.scene-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.scene-row textarea { min-height: 0; font-family: var(--sans); font-size: 0.92rem; }
+.scene-row details summary { cursor: pointer; font: 0.74rem var(--mono); color: var(--muted); margin-bottom: 6px; }
+.scene-row .scene-prompt { font-family: var(--mono); font-size: 0.8rem; }
+.draft-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+.draft-stats { font: 0.78rem var(--mono); }

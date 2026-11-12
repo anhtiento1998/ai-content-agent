@@ -94,6 +94,10 @@
             <svg class="rocket" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c3 2.5 4.5 6 4.5 10l2.5 3-2 4-2.5-2h-5L7 19l-2-4 2.5-3C7.5 8 9 4.5 12 2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="12" cy="10" r="1.8" fill="currentColor"/><path class="flame" d="M10.5 18.5 12 23l1.5-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
             <span>Khởi động</span>
           </button>
+          <button type="button" class="btn small script-btn" id="script-submit"
+            title="Chỉ viết kịch bản (rẻ, nhanh). Bạn sửa từng cảnh ở Bàn kịch bản rồi mới dựng giọng đọc và hình.">
+            ✎ Viết kịch bản trước, sửa rồi mới dựng
+          </button>
         </form>
       </section>
 
@@ -110,6 +114,12 @@
         </section>
       </div>
     </div>
+
+    <section class="panel script-panel" id="script-panel" hidden>
+      <div class="panel-title"><span class="dot"></span>SCRIPT DESK · sửa kịch bản trước khi dựng</div>
+      <h2>Bàn kịch bản <span class="count-badge zero" id="draft-count">0</span></h2>
+      <div class="drafts" id="drafts"></div>
+    </section>
 
     <section class="panel review-panel">
       <div class="panel-title"><span class="dot warn"></span>REVIEW QUEUE · duyệt trước khi phát sóng</div>

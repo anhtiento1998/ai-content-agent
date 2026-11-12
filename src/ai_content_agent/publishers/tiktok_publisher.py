@@ -116,16 +116,22 @@ class TikTokTokens:
                 f"TikTok token refresh failed ({resp.get('error')}): {resp.get('error_description', resp)} — "
                 "the refresh token may be expired or revoked; re-authorize the account"
             )
+        self.store(resp, previous_refresh_token=refresh_token)
+        return resp["access_token"]
+
+    def store(self, resp: dict, *, previous_refresh_token: str | None = None) -> None:
+        """Persist a token response from /v2/oauth/token/ (first login or refresh)."""
+
         now = time.time()
         self._save({
             "access_token": resp["access_token"],
             "expires_at": now + int(resp.get("expires_in", 3600)),
             # TikTok may rotate the refresh token; always keep the newest one.
-            "refresh_token": resp.get("refresh_token", refresh_token),
+            "refresh_token": resp.get("refresh_token", previous_refresh_token),
             "refresh_expires_at": now + int(resp.get("refresh_expires_in", 0)) if resp.get("refresh_expires_in") else None,
             "open_id": resp.get("open_id"),
+            "scope": resp.get("scope"),
         })
-        return resp["access_token"]
 
 
 class TikTokPublisher(Publisher):

@@ -192,20 +192,36 @@ class VideoStudio:
         try:
             if checkpoint and checkpoint.storyboard:
                 storyboard = storyboard_from_dict(checkpoint.storyboard)
-                logger.info("Resuming with the saved storyboard %r", storyboard.title)
+                logger.info("Using the saved storyboard %r", storyboard.title)
             else:
-                hook = plan.hook_instruction if plan else ""
-                storyboard = self.write_storyboard(topic, style=style, hook=hook, meter=meter)
-                similar = review(storyboard) if review else None
-                if similar:
-                    logger.info("Storyboard too similar to an earlier script — rewriting once with a different angle")
-                    storyboard = self.write_storyboard(topic, style=style, hook=hook, avoid=similar, meter=meter)
+                storyboard = self._write_reviewed(topic, style, plan, review, meter)
                 if checkpoint:
                     checkpoint.storyboard = storyboard.to_dict()
                     checkpoint.commit()
             return storyboard, self.render(storyboard, progress=report, plan=plan, checkpoint=checkpoint, meter=meter)
         except StudioStageError as exc:
             exc.cost = meter.summary()  # money already spent on a run that failed
+            raise
+
+    def _write_reviewed(self, topic, style, plan, review, meter) -> Storyboard:
+        hook = plan.hook_instruction if plan else ""
+        storyboard = self.write_storyboard(topic, style=style, hook=hook, meter=meter)
+        similar = review(storyboard) if review else None
+        if similar:
+            logger.info("Storyboard too similar to an earlier script — rewriting once with a different angle")
+            storyboard = self.write_storyboard(topic, style=style, hook=hook, avoid=similar, meter=meter)
+        return storyboard
+
+    def draft(
+        self, topic: str, *, style: str = "", plan: VariationPlan | None = None, review: ScriptReview | None = None
+    ) -> tuple[Storyboard, dict]:
+        """Write the storyboard only (for editing before rendering). Returns it with what it cost."""
+
+        meter = CostMeter(self._prices)
+        try:
+            return self._write_reviewed(topic, style, plan, review, meter), meter.summary()
+        except StudioStageError as exc:
+            exc.cost = meter.summary()
             raise
 
     def write_storyboard(

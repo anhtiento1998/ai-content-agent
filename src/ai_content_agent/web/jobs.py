@@ -1,8 +1,9 @@
 """Background job runner for dashboard-triggered, scheduled and batch pipeline runs.
 
-Three kinds of job share one worker thread: "produce" (render a topic, then
-queue it for review or publish it), "publish" (approve or retry an
-already-rendered run) and "batch" (one item of a durable batch, fed by
+Four kinds of job share one worker thread: "produce" (render a topic — or an
+edited script from the script desk — then queue it for review or publish it),
+"script" (write a storyboard only, to be edited), "publish" (approve or retry
+an already-rendered run) and "batch" (one item of a durable batch, fed by
 BatchWorker). Serialising keeps API spend and quota predictable. Job state
 lives in memory only; durable results are in HistoryStore and BatchStore.
 """
@@ -21,13 +22,16 @@ from typing import Callable
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.batch import BatchItem, BatchRunner
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline, RunOutcome
+from ai_content_agent.pipeline.drafts import OPEN, RENDERED, RENDERING, Draft, DraftStore
 from ai_content_agent.studio import StudioStageError
+from ai_content_agent.studio.studio import Checkpoint
+from ai_content_agent.studio.variation import VariationPlan
 
 logger = logging.getLogger(__name__)
 
 # factory(platforms, publish_only=False) -> ContentPipeline
 PipelineFactory = Callable[..., ContentPipeline]
-_TERMINAL = {"succeeded", "partial", "skipped", "failed", "review"}
+_TERMINAL = {"succeeded", "partial", "skipped", "failed", "review", "scripted"}
 
 
 def _now() -> str:
@@ -61,6 +65,7 @@ class Job:
     batch_id: int | None = None
     cost_usd: float | None = None
     cost_complete: bool = True
+    draft_id: int | None = None
 
 
 class JobManager:
@@ -71,10 +76,12 @@ class JobManager:
         history: HistoryStore | None = None,
         max_jobs: int = 100,
         batch_runner: BatchRunner | None = None,
+        drafts: DraftStore | None = None,
     ) -> None:
         self._factory = pipeline_factory
         self._history = history
         self._batch_runner = batch_runner
+        self._drafts = drafts
         self._batch_items: dict[str, BatchItem] = {}
         self._max_jobs = max_jobs
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="content-job")
@@ -113,6 +120,27 @@ class JobManager:
         return self._enqueue(Job(
             id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style="", dry_run=False,
             force=False, source=source, kind="publish", run_id=run_id, actor=actor,
+        ))
+
+    def submit_script(self, topic: str, platforms: list[str], *, style: str = "", force: bool = False) -> Job:
+        """Write a storyboard only; it lands on the script desk for editing."""
+
+        if self._drafts is None:
+            raise RuntimeError("This job manager has no draft store")
+        return self._enqueue(Job(
+            id=uuid.uuid4().hex[:12], topic=topic, platforms=list(platforms), style=style, dry_run=False,
+            force=force, source="manual", kind="script",
+        ))
+
+    def submit_render(self, draft: Draft, platforms: list[str], *, dry_run: bool = False) -> Job:
+        """Render an (edited) draft from the script desk."""
+
+        if self._drafts is None:
+            raise RuntimeError("This job manager has no draft store")
+        self._drafts.set_status(draft.id, RENDERING)
+        return self._enqueue(Job(
+            id=uuid.uuid4().hex[:12], topic=draft.topic, platforms=list(platforms), style=draft.style,
+            dry_run=dry_run, force=True, source="script", draft_id=draft.id,
         ))
 
     def submit_batch_item(self, item: BatchItem) -> Job:
@@ -155,11 +183,16 @@ class JobManager:
                     self._history.record_error(job.topic, "setup", f"{type(exc).__name__}: {exc}")
                 raise
 
+            if job.kind == "script":
+                self._write_script(job, pipeline, progress)
+                return
             if job.kind == "publish":
                 outcome = pipeline.publish_run(
                     job.run_id, progress=progress, actor=job.actor,
                     action="approve" if job.source == "review" else "retry",
                 )
+            elif job.draft_id is not None:
+                outcome = self._render_draft(job, pipeline, progress)
             else:
                 outcome = pipeline.run(
                     job.topic, style=job.style, dry_run=job.dry_run, force=job.force, progress=progress
@@ -178,7 +211,47 @@ class JobManager:
             job.failed_stage = job.failed_stage or ("publish" if job.kind == "publish" else None)
             job.error = f"{type(exc).__name__}: {exc}"
         finally:
+            if job.status == "failed" and job.kind == "produce" and job.draft_id is not None:
+                self._drafts.set_status(job.draft_id, OPEN)  # e.g. setup failed before the render began
             job.finished_at = _now()
+
+    def _write_script(self, job: Job, pipeline: ContentPipeline, progress) -> None:
+        progress("script", 0, 0)
+        draft = pipeline.write_script(job.topic, style=job.style, force=job.force)
+        if draft is None:
+            job.status = "skipped"
+            job.error = "Topic này đã được đăng hoặc đang chờ duyệt — bật “Đăng lại” để bỏ qua kiểm tra trùng."
+            return
+        cost = draft.cost or {}
+        job.draft_id = self._drafts.create(
+            job.topic, job.style, job.platforms, draft.storyboard,
+            variation=draft.plan.to_dict() if draft.plan else None, similarity=draft.similarity,
+            similar_to=draft.similar_to, cost_usd=cost.get("usd"),
+        )
+        if cost.get("items"):
+            job.cost_usd, job.cost_complete = cost["usd"], cost["complete"]
+        job.status = "scripted"
+
+    def _render_draft(self, job: Job, pipeline: ContentPipeline, progress) -> RunOutcome:
+        """Render exactly the text on the script desk; a failed or dry run leaves the draft editable."""
+
+        draft = self._drafts.get(job.draft_id)
+        finished = False
+        try:
+            if draft is None:
+                raise ValueError(f"Draft #{job.draft_id} no longer exists")
+            outcome = pipeline.run(
+                job.topic, style=job.style, dry_run=job.dry_run, force=True, progress=progress,
+                checkpoint=Checkpoint(storyboard=draft.storyboard),
+                plan=VariationPlan(**draft.variation) if draft.variation else None,
+            )
+            finished = not job.dry_run
+            if finished:
+                self._drafts.set_status(draft.id, RENDERED, run_id=outcome.run_id)
+            return outcome
+        finally:
+            if not finished and draft is not None:
+                self._drafts.set_status(draft.id, OPEN)
 
     @staticmethod
     def _finish(job: Job, outcome: RunOutcome) -> None:

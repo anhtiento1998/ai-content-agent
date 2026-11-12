@@ -66,6 +66,15 @@ def main() -> None:
     history_p.add_argument("--limit", type=int, default=20)
 
     sub.add_parser("youtube-auth", help="One-time YouTube consent in a browser; caches the token for publishing")
+    tiktok_auth_p = sub.add_parser(
+        "tiktok-auth", help="One-time TikTok login in a browser; saves the refresh token for publishing")
+    tiktok_auth_p.add_argument("--port", type=int, default=8721,
+                               help="Local port for the redirect (register http://localhost:PORT/callback/ in the app)")
+    tiktok_auth_p.add_argument("--redirect-uri", help="For web apps: the https redirect URI registered in the TikTok "
+                                                      "app; you then paste the redirected address by hand")
+    tiktok_auth_p.add_argument("--scope", help="Comma-separated scopes (default depends on TIKTOK_MODE)")
+    tiktok_auth_p.add_argument("--pkce", default="hex", choices=["hex", "base64url", "none"],
+                               help="PKCE challenge encoding for the local flow (TikTok desktop apps use hex)")
 
     sub.add_parser("review", help="List rendered runs waiting for approval")
     approve_p = sub.add_parser("approve", help="Approve a pending run and publish it")
@@ -213,6 +222,20 @@ def main() -> None:
             )
         authorize(config.youtube_token_file, config.youtube_client_secret_file)
         print(f"YouTube token saved to {config.youtube_token_file}")
+
+    elif args.command == "tiktok-auth":
+        from ai_content_agent.publishers.tiktok_auth import SCOPES_BY_MODE, TikTokAuthError, authorize as tiktok_login
+
+        scope = args.scope or SCOPES_BY_MODE.get(config.tiktok_mode, SCOPES_BY_MODE["direct"])
+        try:
+            info = tiktok_login(config.tiktok_client_key, config.tiktok_client_secret, config.tiktok_token_file,
+                                scope=scope, port=args.port, redirect_uri=args.redirect_uri, pkce=args.pkce)
+        except (TikTokAuthError, KeyboardInterrupt) as exc:
+            sys.exit(f"TikTok login failed: {exc or 'cancelled'}")
+        days = int((info.get("refresh_expires_in") or 0) / 86400)
+        print(f"TikTok token saved to {config.tiktok_token_file} (scopes: {info.get('scope') or scope}"
+              f"{f'; login lasts about {days} days' if days else ''}).")
+        print("TIKTOK_REFRESH_TOKEN in .env is no longer needed — the token file is refreshed automatically.")
 
     elif args.command == "mcp":
         from ai_content_agent.mcp_server import main as mcp_main
