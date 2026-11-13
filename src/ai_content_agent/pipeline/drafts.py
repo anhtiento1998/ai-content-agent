@@ -81,6 +81,7 @@ def clean_storyboard(data: dict) -> Storyboard:
             or f"A vivid vertical shot illustrating: {narration}"[:MAX_PROMPT],
             on_screen_text=text(scene.get("on_screen_text"), f"scene {number} on-screen text", MAX_OVERLAY,
                                 required=False),
+            keywords=text(scene.get("keywords"), f"scene {number} keywords", 80, required=False),
         ))
     hashtags = data.get("hashtags") or []
     if isinstance(hashtags, str):

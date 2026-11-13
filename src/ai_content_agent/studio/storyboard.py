@@ -18,6 +18,7 @@ class Scene:
     narration: str
     visual_prompt: str
     on_screen_text: str = ""
+    keywords: str = ""  # 2-4 English words for stock-footage search (pexels, pixabay)
 
 
 @dataclass
@@ -66,12 +67,14 @@ Rules:
 - "narration": the voice-over for that scene, in {lang}, natural spoken style, no emojis, no stage directions.
 - "visual_prompt": in English, a vivid description of the shot for an image/video generation model
   (subject, setting, lighting, camera angle, mood). Never ask for text, captions, logos or watermarks.
+- "keywords": 2 to 4 plain English words naming what stock footage of this scene should show
+  (concrete things you can film, e.g. "air conditioner remote"; no adjectives, no abstract ideas).
 - "on_screen_text": a short overlay in {lang} of at most 6 words, or "" for none.
 - "title": catchy, at most 90 characters, in {lang}. "description": 1-2 sentences in {lang}.
 - "hashtags": 3 to 6 relevant tags, without the # sign.
 
 Respond with ONLY a JSON object, no prose:
-{{"title": str, "description": str, "hashtags": [str], "scenes": [{{"narration": str, "visual_prompt": str, "on_screen_text": str}}]}}"""
+{{"title": str, "description": str, "hashtags": [str], "scenes": [{{"narration": str, "visual_prompt": str, "keywords": str, "on_screen_text": str}}]}}"""
 
 
 def _text(value, field_name: str, *, required: bool = True) -> str:
@@ -93,6 +96,7 @@ def parse_storyboard(text: str) -> Storyboard:
             narration=_text(raw.get("narration"), f"scenes[{i}].narration"),
             visual_prompt=_text(raw.get("visual_prompt"), f"scenes[{i}].visual_prompt"),
             on_screen_text=_text(raw.get("on_screen_text"), f"scenes[{i}].on_screen_text", required=False),
+            keywords=_text(raw.get("keywords"), f"scenes[{i}].keywords", required=False)[:80],
         )
         for i, raw in enumerate(raw_scenes[:MAX_SCENES])
         if isinstance(raw, dict)

@@ -18,6 +18,7 @@ from .google_provider import GeminiProvider, GeminiVoiceProvider, ImagenProvider
 from .local_provider import CardImageProvider, SilentVoiceProvider
 from .local_tts import VieNeuVoiceProvider, ZeroTTSVoiceProvider
 from .meta_muse_provider import MetaMuseVideoProvider, MuseSparkProvider
+from .stock_provider import PexelsPhotoProvider, PexelsVideoProvider, PixabayVideoProvider
 from .openai_provider import OpenAIImageProvider, OpenAIProvider, OpenAIVoiceProvider
 
 TEXT_PROVIDERS = {
@@ -35,6 +36,9 @@ VISUAL_PROVIDERS = {
     "veo": VeoProvider,
     "comfyui": ComfyUIImageProvider,
     "comfyui-video": ComfyUIVideoProvider,
+    "pexels": PexelsVideoProvider,
+    "pexels-photo": PexelsPhotoProvider,
+    "pixabay": PixabayVideoProvider,
     "muse": MetaMuseVideoProvider,
 }
 

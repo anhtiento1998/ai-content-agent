@@ -296,8 +296,13 @@ class VideoStudio:
         language = self._settings.language
         caption_words = [nfc(scene.narration).split() for scene in scenes]
         spoken = [spoken_words(words, language) for words in caption_words]
-        prompts = [f"{scene.visual_prompt}, {plan.visual_suffix}" if plan.visual_suffix else scene.visual_prompt
-                   for scene in scenes]
+        if getattr(self._visuals, "uses_keywords", False):
+            # Stock libraries are searched with a few concrete words, not an image-model prompt.
+            prompts = [scene.keywords or " ".join(scene.visual_prompt.replace(",", " ").split()[:4])
+                       for scene in scenes]
+        else:
+            prompts = [f"{scene.visual_prompt}, {plan.visual_suffix}" if plan.visual_suffix else scene.visual_prompt
+                       for scene in scenes]
         logger.info("Rendering %d scenes in %s (visual=%s, voice=%s)", len(scenes), work, self._visuals.name, self._voice.name)
 
         voice_durations = self._generate_assets(
@@ -357,6 +362,10 @@ class VideoStudio:
                 scenes=len(scenes), duration=total,
             )
             provenance["encoder"] = encoder.name
+            sources = getattr(self._visuals, "sources", None)
+            if sources and not self._avatar_full:
+                names = set(visual_files)  # where each stock clip came from, for attribution and disputes
+                provenance["visual_sources"] = [source for source in sources if source["file"] in names]
             if self._avatar is not None:
                 provenance["engines"]["avatar"] = {
                     "provider": self._avatar.name, "model": getattr(self._avatar, "_model", None),

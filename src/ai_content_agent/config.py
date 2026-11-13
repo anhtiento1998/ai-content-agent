@@ -31,6 +31,8 @@ class Config:
     visual_model: str | None = None
     voice_model: str | None = None
     voice_name: str | None = None
+    pexels_api_key: str | None = None
+    pixabay_api_key: str | None = None
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_workflow: str | None = None
     avatar_provider: str = "none"
@@ -158,6 +160,9 @@ class Config:
                 "gpt-image": entry(openai),
                 "imagen": entry(google),
                 "veo": entry(google),
+                "pexels": entry(bool(self.pexels_api_key), "Cần PEXELS_API_KEY (miễn phí tại pexels.com/api)"),
+                "pexels-photo": entry(bool(self.pexels_api_key), "Cần PEXELS_API_KEY (miễn phí tại pexels.com/api)"),
+                "pixabay": entry(bool(self.pixabay_api_key), "Cần PIXABAY_API_KEY (miễn phí tại pixabay.com/api/docs)"),
                 "comfyui": entry(bool(self.comfyui_workflow), "Cần COMFYUI_WORKFLOW (file workflow xuất dạng API)"),
                 "comfyui-video": entry(bool(self.comfyui_workflow), "Cần COMFYUI_WORKFLOW (file workflow xuất dạng API)"),
                 "muse": entry(False, "Meta chưa mở API cho Muse Video"),

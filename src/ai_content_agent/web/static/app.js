@@ -1136,6 +1136,10 @@ function sceneRow(scene = {}) {
     el("details", {}, [
       el("summary", { text: "Mô tả hình ảnh (tiếng Anh, gửi cho engine tạo hình)" }),
       el("textarea", { class: "scene-prompt", rows: "2", maxlength: "800", text: scene.visual_prompt || "" }),
+      el("label", { class: "field" }, [
+        el("span", { class: "mono label" }, ["> từ_khoá_stock ", el("small", { text: "(2–4 từ tiếng Anh, dùng khi lấy hình từ Pexels/Pixabay)" })]),
+        el("input", { type: "text", class: "scene-keywords", maxlength: "80", value: scene.keywords || "" }),
+      ]),
     ]),
   ]);
 }
@@ -1201,6 +1205,7 @@ function collectDraft(card) {
       narration: row.querySelector(".scene-narration").value,
       visual_prompt: row.querySelector(".scene-prompt").value,
       on_screen_text: row.querySelector(".scene-overlay").value,
+      keywords: row.querySelector(".scene-keywords").value,
     })),
   };
 }

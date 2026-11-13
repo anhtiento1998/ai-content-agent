@@ -53,7 +53,8 @@ DEFAULT_PRICES: dict[str, dict[str, dict[str, float]]] = {
         "gpt-4o-mini-tts": {"per_minute": 0.015},
     },
 }
-FREE_PROVIDERS = {"card", "silent", "vieneu", "zerotts", "comfyui", "comfyui-video", "comfyui-avatar"}
+FREE_PROVIDERS = {"card", "silent", "vieneu", "zerotts", "comfyui", "comfyui-video", "comfyui-avatar",
+                  "pexels", "pexels-photo", "pixabay"}
 
 
 class PriceBook:

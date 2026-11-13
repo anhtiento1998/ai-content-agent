@@ -121,6 +121,29 @@ chừng.
   giờ rồi thử lại, không bị đánh lỗi.
 - `USD_VND_RATE=26000`: hiện thêm số tiền quy đổi ra đồng.
 
+## Hình từ kho video/ảnh miễn phí (Pexels, Pixabay)
+
+Thay vì tạo hình bằng AI (tốn tiền), lấy clip/ảnh thật từ kho miễn phí:
+
+| `VISUAL_PROVIDER` | Lấy gì | Cần |
+|---|---|---|
+| `pexels` | clip dọc từ Pexels | `PEXELS_API_KEY` (miễn phí tại pexels.com/api) |
+| `pexels-photo` | ảnh dọc từ Pexels, app tự zoom chậm | `PEXELS_API_KEY` |
+| `pixabay` | clip từ Pixabay | `PIXABAY_API_KEY` (miễn phí tại pixabay.com/api/docs) |
+
+- Kho stock tìm bằng vài từ cụ thể, nên kịch bản có thêm ô **từ khoá** cho
+  mỗi cảnh (2–4 từ tiếng Anh, ví dụ `air conditioner remote`). Sửa được ở
+  Bàn kịch bản, trong mục *Mô tả hình ảnh*. Tìm không ra thì app tự bỏ bớt
+  từ cuối rồi tìm lại.
+- Clip đã dùng được ghi nhớ (600 clip gần nhất, file `stock_used.json` cạnh
+  cơ sở dữ liệu) nên một video không lặp clip và các video sau cũng không
+  dùng lại clip cũ.
+- Nguồn từng clip (link trang, tác giả) được ghi vào `provenance.json`.
+- Giấy phép Pexels/Pixabay cho dùng miễn phí, không bắt buộc ghi nguồn,
+  nhưng cấm bán lại nguyên bản và cấm ngụ ý người trong hình quảng cáo cho
+  bạn — đọc giấy phép trước khi dùng thương mại. Chi phí tính là 0.
+- Phần gọi API viết theo tài liệu hai dịch vụ, **chưa chạy với key thật**.
+
 ## Hình/clip từ model chạy trên máy (ComfyUI)
 
 Chạy Wan 2.2, FramePack, Flux… trên card đồ hoạ của bạn, không tốn phí API:

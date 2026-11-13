@@ -7,6 +7,8 @@ providers/__init__.py; this module only knows which credentials each needs.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from ai_content_agent.config import Config
 from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import HistoryStore
@@ -50,12 +52,16 @@ class ContentAgent:
 
     def _build_visual_generator(self):
         c = self._config
+        used_clips = str(Path(c.history_db_path).with_name("stock_used.json"))  # next to the history database
         credentials = {
             "gpt-image": {"api_key": c.openai_api_key},
             "imagen": {"api_key": c.google_api_key},
             "veo": {"api_key": c.google_api_key},
             "comfyui": {"workflow": c.comfyui_workflow, "url": c.comfyui_url},
             "comfyui-video": {"workflow": c.comfyui_workflow, "url": c.comfyui_url},
+            "pexels": {"api_key": c.pexels_api_key, "used_file": used_clips},
+            "pexels-photo": {"api_key": c.pexels_api_key, "used_file": used_clips},
+            "pixabay": {"api_key": c.pixabay_api_key, "used_file": used_clips},
         }
         return _build("VISUAL_PROVIDER", VISUAL_PROVIDERS, c.visual_provider, credentials, {"model": c.visual_model})
 

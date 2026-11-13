@@ -63,6 +63,7 @@ class SceneEdit(BaseModel):
     narration: str = Field(max_length=2000)
     visual_prompt: str = Field(max_length=2000)
     on_screen_text: str = Field("", max_length=300)
+    keywords: str = Field("", max_length=200)
 
 
 class DraftEdit(BaseModel):
