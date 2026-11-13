@@ -217,17 +217,68 @@ ai-content-agent mcp          # server MCP qua stdio
   ai-content-agent>", "args": ["mcp"]}}}` và đặt thư mục làm việc là thư mục
   dự án (nơi có `.env`).
 
-18 công cụ: `status`, `format_performance`, `produce_video`, `job_status`, `list_jobs`,
+28 công cụ: `status`, `format_performance`, `produce_video`, `job_status`, `list_jobs`,
 `create_batch`, `list_batches`, `batch_control`, `review_queue`, `get_run`,
 `recent_runs`, `recent_errors`, `reject_run`, `export_edit_bundle`,
 `export_capcut`, và ba công cụ đăng bài `approve_run`, `retry_publish`,
-`takedown`.
+`takedown`, cùng 10 công cụ cho bàn kịch bản và lịch:
+
+- Kịch bản: `write_script`, `list_drafts`, `get_draft`, `update_draft`,
+  `discard_draft`, `render_draft`.
+- Lịch: `get_schedule`, `update_schedule`, `add_schedule_topics`,
+  `remove_schedule_topic`.
+
+**Sửa kịch bản qua MCP:** gọi `write_script(topic, platforms=["youtube"])`,
+đợi `job_status(job_id)` trả `status=scripted` và `draft_id`, rồi đọc bằng
+`get_draft(draft_id)`. `update_draft` nhận **toàn bộ** storyboard, ví dụ:
+
+```json
+{
+  "draft_id": 1,
+  "storyboard": {
+    "title": "Mẹo tiết kiệm điện",
+    "description": "Mô tả đã kiểm tra",
+    "hashtags": ["meohay"],
+    "scenes": [{
+      "narration": "Lời đọc đã sửa và kiểm tra thông tin.",
+      "visual_prompt": "a ceiling fan in a living room",
+      "on_screen_text": "Mẹo nhỏ mỗi ngày",
+      "keywords": "ceiling fan"
+    }]
+  }
+}
+```
+
+Sau đó gọi `render_draft(draft_id)` và theo dõi job. Video dùng đúng lời đã
+sửa, vẫn chờ duyệt theo `REQUIRE_APPROVAL`. `dry_run=true` chỉ dựng thử và
+để bản nháp mở; lỗi dựng cũng trả bản nháp về trạng thái mở. Với
+`update_draft` và `render_draft`, bỏ qua `platforms` sẽ giữ/dùng nền tảng
+đã lưu; `platforms=[]` là xóa/bỏ chọn các nền tảng. Chỉ bản nháp đang mở mới
+được sửa, bỏ hoặc bắt đầu dựng; hai client không thể cùng nhận dựng một
+bản nháp. MCP không đặt lại trạng thái bản đang dựng khi kết nối; nếu tiến
+trình dựng bị tắt đột ngột, khởi động lại dashboard để phục hồi bản nháp.
+
+**Quản lý lịch qua MCP:** `get_schedule` trả cron, múi giờ, nền tảng và
+các chủ đề (có ID). Thêm chủ đề bằng `add_schedule_topics(topics=[...])`,
+xóa bằng `remove_schedule_topic(topic_id)`. Ví dụ đặt lịch 9 giờ thứ Hai
+và thứ Sáu: `update_schedule(cron="0 9 * * mon,fri", platforms=["youtube"],
+enabled=true)`. Đây là thay thế toàn bộ cấu hình lịch; đọc cấu hình trước
+khi sửa. Dùng `enabled=false` để dừng lịch.
+
+**Dashboard là tiến trình thực thi lịch.** Chạy `ai-content-agent dashboard`
+với cùng `.env`, `HISTORY_DB_PATH` và `SCHEDULE_TIMEZONE` với MCP. Dashboard
+nhận thay đổi cấu hình trong khoảng 5 giây; danh sách chủ đề được đọc mỗi
+lượt chạy. MCP chỉ lưu cấu hình, không khởi động scheduler thứ hai và không
+thể xác nhận dashboard khác đang chạy (`next_run_at` từ MCP là `null`). Khi
+dashboard tắt, lịch không chạy. Bật lịch hoặc thêm chủ đề vào lịch đang bật
+cũng phải qua kiểm tra `REQUIRE_APPROVAL` / `MCP_ALLOW_PUBLISH`; tắt lịch
+luôn được phép.
 
 **An toàn:** mặc định agent **không được đăng bài** — ba công cụ đăng bài trả
 lỗi cho tới khi bạn đặt `MCP_ALLOW_PUBLISH=true`, và nếu
 `REQUIRE_APPROVAL=false` thì agent cũng không được dựng video để đăng (chỉ
 được chạy thử). Agent viết, dựng **và** đăng mà không ai xem chính là kiểu
-"sản xuất hàng loạt tự động" các nền tảng đang phạt. Mọi thao tác của agent
+"sản xuất hàng loạt tự động" các nền tảng đang phạt. Các quyết định duyệt, từ chối, đăng lại và gỡ bài của agent
 được ghi vào nhật ký người duyệt với tên `mcp:...`.
 
 ## Giọng đọc chạy trên máy (miễn phí)
@@ -809,3 +860,4 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
       `MetaMuseVideoProvider.generate_clip()`.
 - [x] Quản lý lịch và danh sách chủ đề ngay trên dashboard.
+- [x] MCP: viết/sửa/dựng bản nháp, quản lý cấu hình lịch và danh sách chủ đề dùng chung dashboard.

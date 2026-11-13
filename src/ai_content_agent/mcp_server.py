@@ -29,6 +29,8 @@ from ai_content_agent.export.capcut import CapCutRefused
 from ai_content_agent.export.edit_bundle import EditBundleExporter
 from ai_content_agent.history import PENDING, REJECTED, HistoryStore, RunRecord
 from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchRunner, BatchStore, ItemSpec, batch_summary
+from ai_content_agent.pipeline.drafts import DISCARDED, OPEN, DraftStore, clean_storyboard
+from ai_content_agent.pipeline.scheduler import ScheduleManager, ScheduleStore
 from ai_content_agent.publishers import PUBLISHERS
 from ai_content_agent.web.jobs import BatchWorker, JobManager
 
@@ -44,6 +46,15 @@ scripts, cost, pronunciation) -> tell the user what is waiting; they approve in 
 Publishing tools (`approve_run`, `retry_publish`, `takedown`) work only when the owner set
 MCP_ALLOW_PUBLISH=true; otherwise report what is ready and let the user approve. Never try to work
 around that. `reject_run` is always available for videos that are clearly wrong.
+For script editing: `write_script` -> poll `job_status` for draft_id -> `get_draft` ->
+`update_draft` with the full storyboard -> `render_draft` -> poll and inspect the review queue.
+Writing a script never publishes; rendering has the same review gate as produce_video.
+
+Schedule tools edit the dashboard's persistent schedule and topics. The dashboard must be running
+with the same HISTORY_DB_PATH and SCHEDULE_TIMEZONE to execute it; the MCP process does not run
+another scheduler. Changes are applied by the dashboard within about 5 seconds. Use get_schedule
+before updating; cron has five fields and weekday names (mon..sun), in the returned timezone.
+Never enable or change an automatic schedule unless the user asked for it.
 Costs are list-price estimates in USD."""
 
 
@@ -92,9 +103,17 @@ class AgentTools:
         self._factory = pipeline_factory or ContentAgent(config).build_pipeline
         self.history = HistoryStore(config.history_db_path)
         self.batches = BatchStore(config.history_db_path)
+        # A second client must not reopen a draft currently being rendered by the dashboard.
+        self.drafts = DraftStore(config.history_db_path, recover=False)
+        self.schedule = ScheduleManager(
+            ScheduleStore(self.history), lambda *_: None, timezone=config.schedule_timezone,
+            jitter_seconds=max(0, config.schedule_jitter_minutes) * 60,
+            recently_done=lambda topic: self.history.has_recent_topic(topic, within_days=config.dedup_window_days),
+            dedup_window_days=config.dedup_window_days,
+        )  # Configuration only: the dashboard is the schedule executor.
         runner = BatchRunner(self.batches, self._factory)
         self.jobs = JobManager(self._factory, history=self.history, batch_runner=runner,
-                               auto_retry_minutes=config.auto_retry_minutes)
+                               auto_retry_minutes=config.auto_retry_minutes, drafts=self.drafts)
         self.worker = BatchWorker(self.jobs, runner).start() if start_worker else BatchWorker(self.jobs, runner)
 
     # ---------- guards ----------
@@ -242,6 +261,102 @@ class AgentTools:
             raise ValueError("action must be pause, resume or retry_failed")
         return batch_summary(self.batches.get(batch_id))
 
+    # ---------- script desk ----------
+
+    def write_script(self, topic: str, style: str = "", platforms: list[str] | None = None,
+                     force: bool = False) -> dict:
+        """Write a storyboard without rendering or publishing. Poll job_status for its draft_id."""
+
+        topic = " ".join((topic or "").split())
+        if not topic or len(topic) > 300:
+            raise ValueError("topic must contain 1 to 300 characters")
+        if len(style) > 300:
+            raise ValueError("style must contain at most 300 characters")
+        return asdict(self.jobs.submit_script(topic, self._platforms(platforms), style=style, force=force))
+
+    def list_drafts(self, limit: int = 30) -> list[dict]:
+        """Editable or rendering storyboards, newest first, including their scenes and estimates."""
+
+        return [draft.summary() for draft in self.drafts.open_drafts(limit=max(1, min(limit, 100)))]
+
+    def _draft(self, draft_id: int, *, editable: bool = False):
+        draft = self.drafts.get(draft_id)
+        if draft is None or draft.status == DISCARDED:
+            raise ValueError(f"Draft #{draft_id} not found")
+        if editable and draft.status != OPEN:
+            raise ValueError(f"Draft #{draft_id} is {draft.status}; it can no longer be changed")
+        return draft
+
+    def get_draft(self, draft_id: int) -> dict:
+        """Read a full storyboard, saved platforms, variation, status and linked rendered run."""
+
+        return self._draft(draft_id).summary()
+
+    def update_draft(self, draft_id: int, storyboard: dict, platforms: list[str] | None = None) -> dict:
+        """Replace the complete storyboard (title, description, hashtags, scenes); only open drafts.
+        Omitted platforms preserves the saved targets; [] clears them. Does not render or publish."""
+
+        self._draft(draft_id, editable=True)
+        chosen = self._platforms(platforms) if platforms is not None else None
+        self.drafts.update(draft_id, clean_storyboard(storyboard), chosen)
+        return self.get_draft(draft_id)
+
+    def discard_draft(self, draft_id: int) -> dict:
+        """Discard an open storyboard without publishing; rendered or rendering drafts are refused."""
+
+        self._draft(draft_id, editable=True)
+        self.drafts.discard(draft_id)
+        return {"draft_id": draft_id, "status": DISCARDED}
+
+    def render_draft(self, draft_id: int, platforms: list[str] | None = None, dry_run: bool = False) -> dict:
+        """Render the saved edited script. Omitted platforms uses saved targets; [] clears targets.
+        Poll job_status. Real runs need a target and the normal review/publish permission."""
+
+        draft = self._draft(draft_id, editable=True)
+        chosen = self._platforms(draft.platforms if platforms is None else platforms)
+        if not dry_run and not chosen:
+            raise ValueError("choose at least one platform, or set dry_run=true")
+        self._require_review_gate(dry_run)
+        return asdict(self.jobs.submit_render(draft, chosen, dry_run=dry_run))
+
+    # ---------- dashboard schedule (configuration only) ----------
+
+    def get_schedule(self) -> dict:
+        """Read saved cron, timezone, targets and topic rotation. Execution requires the dashboard
+        running with the same database; MCP never starts a second scheduler."""
+
+        return {**self.schedule.info(), "executor": "dashboard", "requires_dashboard": True}
+
+    def update_schedule(self, cron: str, platforms: list[str], enabled: bool) -> dict:
+        """Replace schedule settings. Five-field cron uses the configured timezone and mon..sun.
+        Enabling needs the normal review gate; disabling is always allowed. Does not post now."""
+
+        chosen = self._platforms(platforms)
+        if enabled:
+            self._require_review_gate(dry_run=False)
+        self.schedule.update(cron=cron, platforms=chosen, enabled=enabled)
+        return self.get_schedule()
+
+    def add_schedule_topics(self, topics: list[str]) -> dict:
+        """Add 1..500 topics to the saved rotation, ignoring duplicates and blank entries.
+        Adding to an enabled schedule requires the normal review gate."""
+
+        if not 1 <= len(topics) <= 500:
+            raise ValueError("provide 1 to 500 topics")
+        if any(not isinstance(topic, str) or len(topic) > 300 for topic in topics):
+            raise ValueError("each topic must be text with at most 300 characters")
+        if self.schedule.store.settings()["enabled"]:
+            self._require_review_gate(dry_run=False)
+        added = self.schedule.store.add_topics(topics)
+        return {**self.get_schedule(), "added": added}
+
+    def remove_schedule_topic(self, topic_id: int) -> dict:
+        """Remove a topic from the automatic rotation by its id; does not remove videos or drafts."""
+
+        if not self.schedule.store.remove_topic(topic_id):
+            raise ValueError(f"Schedule topic #{topic_id} not found")
+        return self.get_schedule()
+
     # ---------- review & publish ----------
 
     def reject_run(self, run_id: int, reason: str = "", reviewer: str = "") -> dict:
@@ -324,6 +439,8 @@ TOOL_NAMES = (
     "status", "format_performance", "produce_video", "job_status", "list_jobs", "create_batch", "list_batches", "batch_control",
     "review_queue", "get_run", "recent_runs", "recent_errors", "reject_run", "approve_run", "retry_publish",
     "takedown", "export_edit_bundle", "export_capcut",
+    "write_script", "list_drafts", "get_draft", "update_draft", "discard_draft", "render_draft",
+    "get_schedule", "update_schedule", "add_schedule_topics", "remove_schedule_topic",
 )
 
 

@@ -132,13 +132,14 @@ def _draft(row) -> Draft:
 
 
 class DraftStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, recover: bool = True) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
         with closing(self._connect()) as conn:
             conn.executescript(_SCHEMA)
             # A render interrupted by a shutdown leaves its draft editable again.
-            conn.execute("UPDATE drafts SET status = ? WHERE status = ?", (OPEN, RENDERING))
+            if recover:
+                conn.execute("UPDATE drafts SET status = ? WHERE status = ?", (OPEN, RENDERING))
             conn.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -174,10 +175,30 @@ class DraftStore:
 
     def update(self, draft_id: int, storyboard: Storyboard, platforms: list[str] | None = None) -> None:
         with closing(self._connect()) as conn:
-            conn.execute("UPDATE drafts SET storyboard = ?, edited = 1, updated_at = ? WHERE id = ?",
-                         (json.dumps(storyboard.to_dict(), ensure_ascii=False), _now(), draft_id))
+            changed = conn.execute(
+                "UPDATE drafts SET storyboard = ?, edited = 1, updated_at = ? WHERE id = ? AND status = ?",
+                (json.dumps(storyboard.to_dict(), ensure_ascii=False), _now(), draft_id, OPEN),
+            ).rowcount
+            if not changed:
+                raise ValueError(f"Draft #{draft_id} is not open or does not exist")
             if platforms is not None:
                 conn.execute("UPDATE drafts SET platforms = ? WHERE id = ?", (json.dumps(platforms), draft_id))
+            conn.commit()
+
+    def claim_render(self, draft_id: int) -> None:
+        """Only one client may start rendering an open draft."""
+
+        self._transition_open(draft_id, RENDERING)
+
+    def discard(self, draft_id: int) -> None:
+        self._transition_open(draft_id, DISCARDED)
+
+    def _transition_open(self, draft_id: int, status: str) -> None:
+        with closing(self._connect()) as conn:
+            changed = conn.execute("UPDATE drafts SET status = ?, updated_at = ? WHERE id = ? AND status = ?",
+                                   (status, _now(), draft_id, OPEN)).rowcount
+            if not changed:
+                raise ValueError(f"Draft #{draft_id} is not open or does not exist")
             conn.commit()
 
     def set_status(self, draft_id: int, status: str, *, run_id: int | None = None) -> None:
