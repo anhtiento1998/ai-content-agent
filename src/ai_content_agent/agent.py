@@ -88,15 +88,15 @@ class ContentAgent:
         return AVATAR_PROVIDERS[c.avatar_provider](workflow=c.avatar_workflow, image=c.avatar_image,
                                                    url=c.comfyui_url)
 
-    def build_studio(self) -> VideoStudio:
+    def build_studio(self, *, script_only: bool = False) -> VideoStudio:
         c = self._config
-        avatar = self._build_avatar_generator()
+        avatar = None if script_only else self._build_avatar_generator()
         full_avatar = avatar is not None and c.avatar_layout == "full"
         return VideoStudio(
             writer=self._build_text_generator(),
             # A full-frame avatar replaces the scene visuals, so no image engine (or its key) is needed.
-            visuals=VISUAL_PROVIDERS["card"]() if full_avatar else self._build_visual_generator(),
-            voice=self._build_voice_generator(),
+            visuals=VISUAL_PROVIDERS["card"]() if script_only or full_avatar else self._build_visual_generator(),
+            voice=VOICE_PROVIDERS["silent"]() if script_only else self._build_voice_generator(),
             settings=StudioSettings(
                 language=c.content_language,
                 target_seconds=c.target_seconds,
@@ -114,7 +114,8 @@ class ContentAgent:
                 avatar_size_percent=c.avatar_size,
                 keep_intermediates=c.keep_intermediates,
             ),
-            aligner=build_aligner(c.caption_aligner, model=c.whisper_model, language=c.content_language),
+            aligner=None if script_only else build_aligner(
+                c.caption_aligner, model=c.whisper_model, language=c.content_language),
             avatar=avatar,
         )
 
@@ -173,17 +174,28 @@ class ContentAgent:
                 raise ValueError(f"Unknown platform: {platform!r}")
         return publishers
 
-    def build_pipeline(self, platforms: list[str], *, publish_only: bool = False) -> ContentPipeline:
-        """`publish_only` skips building the AI engines — enough to approve, retry or take down runs."""
+    def build_script_pipeline(self, platforms: list[str]) -> ContentPipeline:
+        """A text-only job needs no visual, voice, avatar, aligner or publisher credentials."""
 
+        return self.build_pipeline(platforms, script_only=True)
+
+    def build_pipeline(self, platforms: list[str], *, publish_only: bool = False,
+                       script_only: bool = False) -> ContentPipeline:
+        """Build only the engines required by a publish-only or script-only job."""
+
+        if publish_only and script_only:
+            raise ValueError("publish_only and script_only are mutually exclusive")
         c = self._config
+        studio = None
+        if not publish_only:
+            studio = self.build_studio(script_only=True) if script_only else self.build_studio()
         return ContentPipeline(
-            studio=None if publish_only else self.build_studio(),
-            publishers=self.build_publishers(platforms),
+            studio=studio,
+            publishers=[] if script_only else self.build_publishers(platforms),
             history=HistoryStore(c.history_db_path),
             dedup_window_days=c.dedup_window_days,
             make_thumbnails=c.make_thumbnails,
-            capcut_exporter=self.capcut_exporter() if c.capcut_export and not publish_only else None,
+            capcut_exporter=self.capcut_exporter() if c.capcut_export and not (publish_only or script_only) else None,
             require_approval=c.require_approval,
             max_posts_per_day=c.max_posts_per_day,
             variator=None if publish_only else self.build_variator(),

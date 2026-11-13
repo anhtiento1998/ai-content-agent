@@ -45,7 +45,7 @@ def serve(
     runner = BatchRunner(batches, agent.build_pipeline)
     drafts = DraftStore(config.history_db_path)
     jobs = JobManager(agent.build_pipeline, history=history, batch_runner=runner, drafts=drafts,
-                      auto_retry_minutes=config.auto_retry_minutes)
+                      auto_retry_minutes=config.auto_retry_minutes, script_pipeline_factory=agent.build_script_pipeline)
     batch_worker = BatchWorker(jobs, runner).start()
 
     def recently_published(topic: str) -> bool:
