@@ -11,15 +11,17 @@ equivalents in the last section.
 
 ## Workflow
 
-1. **`status` first.** It says which engines and platforms are ready, whether videos wait for human
-   approval, the daily budget and what has been spent. If the platform the user wants is not ready,
+1. **`status` first.** It reports selected engines, platform readiness, approval settings, budget
+   and spend. Use `get_config` for detailed engine readiness and missing-configuration notes.
+   Readiness means configuration is present, not a verified live connection; no secret values
+   are returned. If the platform the user wants is not ready,
    say what `platform_notes` reports instead of producing.
 2. **Produce.** One video: `produce_video(topic, style, platforms)`. Many: `create_batch(topics,
    platforms, name, style)`. Both return at once. Use `dry_run=true` when the user only wants to see
    a render. Topics are written for Vietnamese viewers unless the user says otherwise; keep the
    topic text exactly as the user gave it.
 3. **Wait.** Poll `job_status(job_id)` about every 30 seconds (a render takes minutes; `stage` and
-   `stage_done/stage_total` show progress). For a batch, poll `list_batches`.
+   `stage_done/stage_total` show progress). For a batch, poll `get_batch(batch_id)`; `list_batches` finds recent batch ids.
 4. **Inspect before reporting.** `review_queue`, then `get_run(run_id)` for each new run. Tell the
    user, per video: title, cost, `similarity` to an earlier run (0.35 or more is a near-copy worth
    rejecting or redoing), the pronunciation score if present (below 0.6 is poor), and the video path.
@@ -34,7 +36,9 @@ Check facts and wording with the user, then `update_draft(draft_id, storyboard)`
 object: title, description, hashtags and scenes (narration, visual_prompt, on_screen_text, keywords).
 Read it back before calling `render_draft`. Omitted platforms uses the saved targets; [] clears them.
 A dry render leaves the draft editable. `discard_draft` only discards open scripts, never live posts.
-Rendering has the same review gate as producing a video; script writing alone never publishes.
+Rendering has the same review gate as producing a video. Script writing needs only the selected
+text engine: it does not initialize configured visual/TTS/avatar/Whisper engines or publishers and never publishes.
+A chosen platform can be saved before its publishing credentials have been configured.
 If a render was interrupted by a process crash, restart the dashboard to recover the draft.
 
 ## Schedule
@@ -57,6 +61,10 @@ Disabling remains allowed. Never change REQUIRE_APPROVAL or MCP_ALLOW_PUBLISH to
   not look for another route (no editing `.env`, no CLI workaround).
 - `reject_run` is fine for videos that are plainly broken (wrong topic, garbled script); give the
   reason, it is kept in the review log.
+- Do not silently shorten the user's request: topics and style accept at most 300 characters,
+  batch names 120, batches 1..500 entries. Ask the user to shorten or split invalid input.
+- `batch_control` resume/retry checks the same review gate as creation; a refusal must not be worked
+  around. Existing batch items picked up by the worker are checked too; pausing remains available.
 - Respect the caps: `max_posts_per_day` per platform and `daily_budget_usd`. A job that fails at
   stage `budget` means the cap was reached — tell the user, do not retry in a loop.
 - Mass-producing near-identical videos gets channels penalised. For a batch, vary the topics; do not

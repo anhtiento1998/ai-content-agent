@@ -202,7 +202,7 @@ def test_sdk_exposes_and_executes_new_tools(factory):
     tools, _, _ = factory()
     server = build_server(tools)
     listed = {tool.name: tool for tool in asyncio.run(server.list_tools())}
-    for name in ("write_script", "list_drafts", "get_draft", "update_draft", "discard_draft", "render_draft",
+    for name in ("get_config", "get_batch", "write_script", "list_drafts", "get_draft", "update_draft", "discard_draft", "render_draft",
                  "get_schedule", "update_schedule", "add_schedule_topics", "remove_schedule_topic"):
         assert listed[name].description
         schema = getattr(listed[name], "input_schema", None) or getattr(listed[name], "inputSchema", None)
@@ -214,3 +214,121 @@ def test_sdk_exposes_and_executes_new_tools(factory):
     assert tools.get_draft(draft_id)["edited"]
     with pytest.raises(Exception, match="not found"):
         asyncio.run(server.call_tool("get_draft", {"draft_id": 999}))
+
+
+def test_script_job_needs_only_text_engine(tmp_path, monkeypatch):
+    from ai_content_agent.agent import ContentAgent
+    from fakes import FakeText
+
+    writer = FakeText()
+    monkeypatch.setattr(ContentAgent, "_build_text_generator", lambda self: writer)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Script job must not initialize rendering or publishing dependencies")
+
+    for method in ("_build_visual_generator", "_build_voice_generator", "_build_avatar_generator",
+                   "build_publishers", "capcut_exporter"):
+        monkeypatch.setattr(ContentAgent, method, forbidden)
+    monkeypatch.setattr("ai_content_agent.agent.build_aligner", forbidden)
+    config = Config(history_db_path=str(tmp_path / "text-only.db"), music_dir=str(tmp_path / "music"),
+                    visual_provider="not-configured", voice_provider="not-configured", avatar_provider="unknown",
+                    caption_aligner="whisper", capcut_export=True)
+    tools = AgentTools(config, start_worker=False)
+    try:
+        job = finish(tools, tools.write_script("Chỉ viết kịch bản", platforms=["youtube"]))
+        assert job["status"] == "scripted" and len(writer.prompts) == 1
+        saved = tools.get_draft(job["draft_id"])
+        assert saved["storyboard"]["scenes"] and saved["platforms"] == ["youtube"]
+        assert tools.review_queue() == [] and tools.recent_runs() == []
+    finally:
+        tools.close()
+
+
+def test_script_factory_is_also_usable_by_dashboard_jobs(tmp_path, monkeypatch):
+    from ai_content_agent.agent import ContentAgent
+    from ai_content_agent.web.jobs import JobManager
+    from fakes import FakeText
+
+    monkeypatch.setattr(ContentAgent, "_build_text_generator", lambda self: FakeText())
+    config = Config(history_db_path=str(tmp_path / "dashboard.db"), visual_provider="missing",
+                    voice_provider="missing", music_dir=str(tmp_path / "music"))
+    agent = ContentAgent(config)
+    drafts = DraftStore(config.history_db_path)
+    jobs = JobManager(agent.build_pipeline, drafts=drafts, script_pipeline_factory=agent.build_script_pipeline)
+    try:
+        job = jobs.submit_script("Kịch bản từ dashboard", [])
+        jobs.wait(job.id, timeout=10)
+        assert jobs.get(job.id)["status"] == "scripted"
+        assert drafts.get(job.draft_id).storyboard["scenes"]
+        with pytest.raises(ValueError, match="Unknown VISUAL_PROVIDER"):
+            agent.build_pipeline([])  # Full rendering still needs the selected rendering engines.
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            agent.build_pipeline([], publish_only=True, script_only=True)
+    finally:
+        jobs.shutdown()
+
+
+def test_get_config_exposes_readiness_without_credentials(factory, monkeypatch):
+    monkeypatch.setattr(Config, "_encoder_status", lambda self: {"encoder": "libx264", "gpu": False})
+    tools, _, _ = factory(openai_api_key="private-openai-key", anthropic_api_key="private-claude-key",
+                          facebook_access_token="private-facebook-token", facebook_page_id="page")
+    result = tools.get_config()
+    assert result["text_providers"]["gpt"]["ready"]
+    assert result["visual_providers"]["pexels"]["note"] and not result["visual_providers"]["pexels"]["ready"]
+    assert result["platforms"]["facebook"]["ready"]
+    assert all(secret not in str(result) for secret in
+               ("private-openai-key", "private-claude-key", "private-facebook-token"))
+
+
+def test_get_batch_reads_older_batches_after_restart(factory):
+    tools, _, _ = factory()
+    first = tools.create_batch(["Cũ"], ["youtube"], name="Lô đầu")
+    for n in range(21):
+        tools.create_batch([f"Chủ đề {n}"], ["youtube"])
+    assert first["id"] not in {batch["id"] for batch in tools.list_batches(limit=20)}
+    reopened, _, _ = factory()
+    old = reopened.get_batch(first["id"])
+    assert old["name"] == "Lô đầu" and old["items"][0]["topic"] == "Cũ" and old["counts"] == {"queued": 1}
+    with pytest.raises(ValueError, match="not found"):
+        tools.get_batch(9999)
+
+
+@pytest.mark.parametrize("topics,style,name", [
+    ([], "", ""), ([" ", ""], "", ""), (["A"] * 501, "", ""),
+    (["x" * 301], "", ""), ([None], "", ""), ([42], "", ""),
+    (["A"], "x" * 301, ""), (["A"], "", "x" * 121),
+])
+def test_bad_batch_input_never_creates_a_batch(factory, topics, style, name):
+    tools, _, _ = factory()
+    with pytest.raises(ValueError):
+        tools.create_batch(topics, ["youtube"], style=style, name=name)
+    assert tools.list_batches() == [] and tools.list_jobs() == []
+
+
+def test_produce_and_script_reject_long_input_before_queuing(factory):
+    tools, _, _ = factory()
+    for method in (tools.produce_video, tools.write_script):
+        with pytest.raises(ValueError, match="topic"):
+            method("x" * 301, platforms=["youtube"])
+        with pytest.raises(ValueError, match="style"):
+            method("A", style="x" * 301, platforms=["youtube"])
+    assert tools.list_jobs() == []
+
+
+def test_batch_resume_retry_and_background_worker_respect_review_gate(factory):
+    tools, _, publisher = factory()
+    batch = tools.create_batch(["Không đăng tự động"], ["youtube"])
+    tools.batch_control(batch["id"], "pause")
+    tools.config.require_approval = False
+    for action in ("resume", "retry_failed"):
+        with pytest.raises(PermissionError, match="REQUIRE_APPROVAL"):
+            tools.batch_control(batch["id"], action)
+    assert tools.get_batch(batch["id"])["status"] == "paused"
+    tools.batches.set_status(batch["id"], "active")  # An existing batch loaded when the worker starts.
+    assert tools.worker.step(timeout=10)
+    blocked = tools.get_batch(batch["id"])
+    assert blocked["counts"] == {"failed": 1} and "REQUIRE_APPROVAL" in blocked["items"][0]["error"]
+    assert publisher.published == []
+    tools.config.mcp_allow_publish = True
+    tools.batch_control(batch["id"], "retry_failed")
+    assert tools.worker.step(timeout=10) and len(publisher.published) == 1

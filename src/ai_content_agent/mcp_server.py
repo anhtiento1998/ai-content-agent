@@ -28,7 +28,7 @@ from ai_content_agent.config import Config
 from ai_content_agent.export.capcut import CapCutRefused
 from ai_content_agent.export.edit_bundle import EditBundleExporter
 from ai_content_agent.history import PENDING, REJECTED, HistoryStore, RunRecord
-from ai_content_agent.pipeline.batch import ACTIVE, PAUSED, BatchRunner, BatchStore, ItemSpec, batch_summary
+from ai_content_agent.pipeline.batch import ACTIVE, MAX_ITEMS, PAUSED, BatchRunner, BatchStore, ItemSpec, batch_summary
 from ai_content_agent.pipeline.drafts import DISCARDED, OPEN, DraftStore, clean_storyboard
 from ai_content_agent.pipeline.scheduler import ScheduleManager, ScheduleStore
 from ai_content_agent.publishers import PUBLISHERS
@@ -38,17 +38,18 @@ logger = logging.getLogger(__name__)
 
 INSTRUCTIONS = """Vietnamese-first short-video factory (YouTube Shorts, TikTok, Facebook Reels).
 
-Typical flow: call `status` first (which engines and platforms are ready, budget, queue size) ->
+Typical flow: call `status` / `get_config` first (which engines and platforms are ready, budget, queue size) ->
 `produce_video` or `create_batch` (returns at once; rendering takes minutes) -> poll `job_status`
-about every 30 s -> `review_queue` / `get_run` to inspect the result (script, similarity to earlier
-scripts, cost, pronunciation) -> tell the user what is waiting; they approve in the dashboard.
+about every 30 s (or `get_batch(batch_id)` for a batch) -> `review_queue` / `get_run` to inspect the
+result (script, similarity to earlier scripts, cost, pronunciation) -> tell the user what is waiting; they approve in the dashboard.
 
 Publishing tools (`approve_run`, `retry_publish`, `takedown`) work only when the owner set
 MCP_ALLOW_PUBLISH=true; otherwise report what is ready and let the user approve. Never try to work
 around that. `reject_run` is always available for videos that are clearly wrong.
 For script editing: `write_script` -> poll `job_status` for draft_id -> `get_draft` ->
 `update_draft` with the full storyboard -> `render_draft` -> poll and inspect the review queue.
-Writing a script never publishes; rendering has the same review gate as produce_video.
+Writing a script needs only the text engine; rendering has the same review gate as produce_video.
+get_config reports credential presence, not verified connectivity; it never returns secret values.
 
 Schedule tools edit the dashboard's persistent schedule and topics. The dashboard must be running
 with the same HISTORY_DB_PATH and SCHEDULE_TIMEZONE to execute it; the MCP process does not run
@@ -111,9 +112,13 @@ class AgentTools:
             recently_done=lambda topic: self.history.has_recent_topic(topic, within_days=config.dedup_window_days),
             dedup_window_days=config.dedup_window_days,
         )  # Configuration only: the dashboard is the schedule executor.
-        runner = BatchRunner(self.batches, self._factory)
-        self.jobs = JobManager(self._factory, history=self.history, batch_runner=runner,
-                               auto_retry_minutes=config.auto_retry_minutes, drafts=self.drafts)
+        runner = BatchRunner(self.batches, self._batch_pipeline)
+        self.jobs = JobManager(
+            self._factory, history=self.history, batch_runner=runner,
+            auto_retry_minutes=config.auto_retry_minutes, drafts=self.drafts,
+            script_pipeline_factory=(ContentAgent(config).build_script_pipeline if pipeline_factory is None
+                                     else pipeline_factory),
+        )
         self.worker = BatchWorker(self.jobs, runner).start() if start_worker else BatchWorker(self.jobs, runner)
 
     # ---------- guards ----------
@@ -131,6 +136,22 @@ class AgentTools:
                 "REQUIRE_APPROVAL=false would publish this video with no human review. Use dry_run=true, "
                 "or the owner must set REQUIRE_APPROVAL=true (recommended) or MCP_ALLOW_PUBLISH=true."
             )
+
+    def _batch_pipeline(self, platforms: list[str]) -> ContentPipeline:
+        # Also guard pre-existing batches picked up when the MCP worker starts.
+        self._require_review_gate(dry_run=False)
+        return self._factory(platforms)
+
+    @staticmethod
+    def _text(value: str, name: str, maximum: int, *, required: bool = False) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be text")
+        value = " ".join(value.split())
+        if required and not value:
+            raise ValueError(f"{name} must not be empty")
+        if len(value) > maximum:
+            raise ValueError(f"{name} must contain at most {maximum} characters")
+        return value
 
     @staticmethod
     def _platforms(platforms: list[str] | None) -> list[str]:
@@ -171,6 +192,12 @@ class AgentTools:
             "encoder": status["encoder"],
             "music": status["music"],
         }
+
+    def get_config(self) -> dict:
+        """Engine choices and readiness notes, platform configuration, captions, music and budget.
+        Secret values are omitted. Credential presence does not verify connectivity or API access."""
+
+        return self.config.status()
 
     def review_queue(self) -> list[dict]:
         """Rendered videos waiting for a human decision."""
@@ -219,25 +246,29 @@ class AgentTools:
                       dry_run: bool = False, force: bool = False) -> dict:
         """Start producing one video. Returns the job at once; poll job_status."""
 
-        topic = " ".join((topic or "").split())
-        if not topic:
-            raise ValueError("topic must not be empty")
+        topic = self._text(topic, "topic", 300, required=True)
+        style = self._text(style, "style", 300)
         chosen = self._platforms(platforms)
         if not dry_run and not chosen:
             raise ValueError("choose at least one platform, or set dry_run=true to only render")
         self._require_review_gate(dry_run)
-        job = self.jobs.submit(topic[:300], chosen, style=style[:300], dry_run=dry_run, force=force, source="mcp")
+        job = self.jobs.submit(topic, chosen, style=style, dry_run=dry_run, force=force, source="mcp")
         return asdict(job)
 
     def create_batch(self, topics: list[str], platforms: list[str], name: str = "", style: str = "") -> dict:
         """Queue many topics as one durable batch (one video at a time; survives restarts)."""
 
+        if not isinstance(topics, list) or not 1 <= len(topics) <= MAX_ITEMS:
+            raise ValueError(f"provide 1 to {MAX_ITEMS} topics")
+        cleaned = [self._text(topic, "topic", 300) for topic in topics]
+        style = self._text(style, "style", 300)
+        name = self._text(name, "name", 120)
         chosen = self._platforms(platforms)
         if not chosen:
             raise ValueError("choose at least one platform")
         self._require_review_gate(dry_run=False)
-        items = [ItemSpec(topic=" ".join(str(t).split())[:300], style=style[:300]) for t in topics if str(t).strip()]
-        batch_id = self.batches.create(name.strip(), chosen, items)
+        items = [ItemSpec(topic=topic, style=style) for topic in cleaned if topic]
+        batch_id = self.batches.create(name, chosen, items)
         return batch_summary(self.batches.get(batch_id))
 
     def list_batches(self, limit: int = 5) -> list[dict]:
@@ -245,12 +276,23 @@ class AgentTools:
 
         return [batch_summary(batch) for batch in self.batches.list(limit=max(1, min(limit, 20)))]
 
+    def get_batch(self, batch_id: int) -> dict:
+        """Inspect one durable batch by id, including counts, items, linked runs and errors.
+        Works after restart and for batches older than list_batches' recent window."""
+
+        batch = self.batches.get(batch_id)
+        if batch is None:
+            raise ValueError(f"Batch #{batch_id} not found")
+        return batch_summary(batch)
+
     def batch_control(self, batch_id: int, action: Literal["pause", "resume", "retry_failed"]) -> dict:
         """Pause or resume a batch, or put its failed items back in the queue."""
 
         batch = self.batches.get(batch_id, with_items=False)
         if batch is None:
             raise ValueError(f"Batch #{batch_id} not found")
+        if action in ("resume", "retry_failed"):
+            self._require_review_gate(dry_run=False)
         if action == "pause" and batch.status == ACTIVE:
             self.batches.set_status(batch_id, PAUSED)
         elif action == "resume" and batch.status == PAUSED:
@@ -265,13 +307,11 @@ class AgentTools:
 
     def write_script(self, topic: str, style: str = "", platforms: list[str] | None = None,
                      force: bool = False) -> dict:
-        """Write a storyboard without rendering or publishing. Poll job_status for its draft_id."""
+        """Write a storyboard using only the selected text engine, without rendering or publishing.
+        Poll job_status for its draft_id. Visual/voice/avatar/publisher credentials are not required."""
 
-        topic = " ".join((topic or "").split())
-        if not topic or len(topic) > 300:
-            raise ValueError("topic must contain 1 to 300 characters")
-        if len(style) > 300:
-            raise ValueError("style must contain at most 300 characters")
+        topic = self._text(topic, "topic", 300, required=True)
+        style = self._text(style, "style", 300)
         return asdict(self.jobs.submit_script(topic, self._platforms(platforms), style=style, force=force))
 
     def list_drafts(self, limit: int = 30) -> list[dict]:
@@ -436,7 +476,8 @@ class AgentTools:
 
 
 TOOL_NAMES = (
-    "status", "format_performance", "produce_video", "job_status", "list_jobs", "create_batch", "list_batches", "batch_control",
+    "status", "get_config", "get_batch", "format_performance", "produce_video", "job_status", "list_jobs",
+    "create_batch", "list_batches", "batch_control",
     "review_queue", "get_run", "recent_runs", "recent_errors", "reject_run", "approve_run", "retry_publish",
     "takedown", "export_edit_bundle", "export_capcut",
     "write_script", "list_drafts", "get_draft", "update_draft", "discard_draft", "render_draft",

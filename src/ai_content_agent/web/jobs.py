@@ -81,8 +81,10 @@ class JobManager:
         batch_runner: BatchRunner | None = None,
         drafts: DraftStore | None = None,
         auto_retry_minutes: float = 0,
+        script_pipeline_factory: PipelineFactory | None = None,
     ) -> None:
         self._factory = pipeline_factory
+        self._script_factory = script_pipeline_factory
         self._history = history
         self._batch_runner = batch_runner
         self._drafts = drafts
@@ -202,7 +204,10 @@ class JobManager:
                 self._finish(job, self._batch_runner.process(self._batch_items.pop(job.id), progress=progress))
                 return
             try:
-                pipeline = self._factory(job.platforms, publish_only=job.kind == "publish")
+                if job.kind == "script" and self._script_factory is not None:
+                    pipeline = self._script_factory(job.platforms)
+                else:
+                    pipeline = self._factory(job.platforms, publish_only=job.kind == "publish")
             except Exception as exc:
                 job.failed_stage = "setup"
                 if self._history:

@@ -217,7 +217,7 @@ ai-content-agent mcp          # server MCP qua stdio
   ai-content-agent>", "args": ["mcp"]}}}` và đặt thư mục làm việc là thư mục
   dự án (nơi có `.env`).
 
-28 công cụ: `status`, `format_performance`, `produce_video`, `job_status`, `list_jobs`,
+30 công cụ: `status`, `get_config`, `get_batch`, `format_performance`, `produce_video`, `job_status`, `list_jobs`,
 `create_batch`, `list_batches`, `batch_control`, `review_queue`, `get_run`,
 `recent_runs`, `recent_errors`, `reject_run`, `export_edit_bundle`,
 `export_capcut`, và ba công cụ đăng bài `approve_run`, `retry_publish`,
@@ -227,6 +227,12 @@ ai-content-agent mcp          # server MCP qua stdio
   `discard_draft`, `render_draft`.
 - Lịch: `get_schedule`, `update_schedule`, `add_schedule_topics`,
   `remove_schedule_topic`.
+
+`get_config` cho biết engine đang chọn, engine nào đã có cấu hình, ghi chú
+thiếu cấu hình, phụ đề, nhạc và ngân sách. Kết quả không chứa API key/token;
+trạng thái `ready` chỉ phản ánh cấu hình, không xác nhận kết nối hoặc quyền
+API thật. `get_batch(batch_id)` đọc đầy đủ một lô theo ID, kể cả lô cũ đã
+ra ngoài danh sách gần đây hoặc sau khi khởi động lại.
 
 **Sửa kịch bản qua MCP:** gọi `write_script(topic, platforms=["youtube"])`,
 đợi `job_status(job_id)` trả `status=scripted` và `draft_id`, rồi đọc bằng
@@ -248,6 +254,10 @@ ai-content-agent mcp          # server MCP qua stdio
   }
 }
 ```
+
+Viết kịch bản chỉ cần engine văn bản; chưa cần cấu hình ảnh, TTS,
+avatar, Whisper hay tài khoản đăng bài. Dashboard cũng dùng luồng chỉ viết
+này. Các engine dựng video sẽ được khởi tạo khi bạn yêu cầu dựng.
 
 Sau đó gọi `render_draft(draft_id)` và theo dõi job. Video dùng đúng lời đã
 sửa, vẫn chờ duyệt theo `REQUIRE_APPROVAL`. `dry_run=true` chỉ dựng thử và
@@ -273,6 +283,13 @@ thể xác nhận dashboard khác đang chạy (`next_run_at` từ MCP là `null
 dashboard tắt, lịch không chạy. Bật lịch hoặc thêm chủ đề vào lịch đang bật
 cũng phải qua kiểm tra `REQUIRE_APPROVAL` / `MCP_ALLOW_PUBLISH`; tắt lịch
 luôn được phép.
+
+**Kiểm tra đầu vào MCP:** chủ đề và style tối đa 300 ký tự, tên lô tối đa
+120 ký tự; một lô nhận từ 1 đến 500 dòng chủ đề (bỏ qua dòng trống, nhưng
+phải còn ít nhất một chủ đề). Dữ liệu quá dài hoặc sai kiểu báo lỗi trước
+khi xếp job; chủ đề không bị tự cắt ngắn. `batch_control` kiểm tra quyền duyệt
+khi tiếp tục/thử lại lô; worker MCP cũng kiểm tra trước mỗi mục của lô đã lưu.
+Tạm dừng lô luôn được phép với ID hợp lệ.
 
 **An toàn:** mặc định agent **không được đăng bài** — ba công cụ đăng bài trả
 lỗi cho tới khi bạn đặt `MCP_ALLOW_PUBLISH=true`, và nếu
