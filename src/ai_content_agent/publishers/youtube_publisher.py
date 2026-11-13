@@ -243,5 +243,23 @@ class YouTubePublisher(Publisher):
                                      url=f"https://youtube.com/shorts/{video_id}", status="recovered")
         return None
 
+    def stats(self, remote_ids: list[str]) -> dict[str, dict]:
+        """View, like and comment counts (videos.list, 1 quota unit per 50 videos)."""
+
+        def number(value) -> int | None:
+            return int(value) if value is not None else None
+
+        service = self._get_service()
+        result: dict[str, dict] = {}
+        for start in range(0, len(remote_ids), 50):
+            batch = remote_ids[start:start + 50]
+            response = service.videos().list(part="statistics", id=",".join(batch)).execute(num_retries=2)
+            for item in response.get("items") or []:
+                numbers = item.get("statistics") or {}
+                result[item["id"]] = {"views": number(numbers.get("viewCount")),
+                                      "likes": number(numbers.get("likeCount")),
+                                      "comments": number(numbers.get("commentCount"))}
+        return result
+
     def delete(self, remote_id: str) -> None:
         self._get_service().videos().delete(id=remote_id).execute(num_retries=2)

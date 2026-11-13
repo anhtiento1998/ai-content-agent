@@ -56,6 +56,9 @@ class Config:
     visual_styles: str | None = None
     hook_styles: str | None = None
     similarity_threshold: int = 35
+    auto_prune_formats: bool = True
+    prune_weak_ratio: int = 50
+    stats_refresh_hours: int = 12
     require_music_license: bool = True
     ai_label_overlay: bool = True
 

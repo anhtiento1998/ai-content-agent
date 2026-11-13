@@ -90,17 +90,24 @@ class Variator:
         self._voices = [v for v in (voices or []) if v]
         self._rng = rng or random.Random()
 
-    def plan(self, recent: list[dict], tracks: list[str]) -> VariationPlan:
-        """`recent`: plans of the latest runs, newest first. `tracks`: usable music files."""
+    def plan(self, recent: list[dict], tracks: list[str], *,
+             exclude: dict[str, set[str]] | None = None) -> VariationPlan:
+        """`recent`: plans of the latest runs, newest first. `tracks`: usable music files.
+        `exclude`: options per dimension to rest (formats that earn few views); a dimension is
+        never emptied by it."""
 
         def history(key: str) -> list[str | None]:
             return [(item or {}).get(key) for item in recent]
 
+        def pick(key: str, options: list[str]) -> str | None:
+            rested = (exclude or {}).get(key) or set()
+            return _least_used([o for o in options if o not in rested] or options, history(key), self._rng)
+
         return VariationPlan(
-            hook=_least_used(self._hooks, history("hook"), self._rng),
-            visual_style=_least_used(self._styles, history("visual_style"), self._rng),
-            voice=_least_used(self._voices, history("voice"), self._rng),
-            music=_least_used(sorted(tracks), history("music"), self._rng),
+            hook=pick("hook", self._hooks),
+            visual_style=pick("visual_style", self._styles),
+            voice=pick("voice", self._voices),
+            music=pick("music", sorted(tracks)),
         )
 
 

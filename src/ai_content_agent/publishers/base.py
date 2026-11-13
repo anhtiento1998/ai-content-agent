@@ -58,6 +58,12 @@ class Publisher(ABC):
 
         return None
 
+    def stats(self, remote_ids: list[str]) -> dict[str, dict]:
+        """{remote_id: {"views": int, "likes": int | None, "comments": int | None}} for the posts the
+        platform can report on. Platforms without a statistics API return {}."""
+
+        return {}
+
     def delete(self, remote_id: str) -> None:
         """Take a published post down. Platforms without a delete API raise NotImplementedError."""
 

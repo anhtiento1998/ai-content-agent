@@ -83,6 +83,8 @@ class ContentPipeline:
         similarity_threshold: float = SIMILARITY_THRESHOLD,
         require_music_license: bool = True,
         daily_budget_usd: float = 0.0,
+        prune_formats: bool = False,
+        weak_ratio: float = 0.5,
     ) -> None:
         if require_approval and history is None:
             raise ValueError("require_approval needs a HistoryStore to hold the review queue")
@@ -98,6 +100,8 @@ class ContentPipeline:
         self._similarity_threshold = similarity_threshold
         self._require_music_license = require_music_license
         self._daily_budget_usd = daily_budget_usd
+        self._prune_formats = prune_formats
+        self._weak_ratio = weak_ratio
 
     @property
     def history(self) -> HistoryStore | None:
@@ -257,7 +261,15 @@ class ContentPipeline:
             return None
         music = getattr(self._studio, "music", None)
         recent = self._history.recent_variations() if self._history else []
-        return self._variator.plan(recent, music.usable_tracks() if music else [])
+        rested = None
+        if self._prune_formats and self._history:
+            from ai_content_agent.pipeline.performance import analyze, weak_options
+
+            rested = weak_options(analyze(self._history, weak_ratio=self._weak_ratio))
+            if any(rested.values()):
+                logger.info("Resting formats with few views: %s",
+                            {key: sorted(value) for key, value in rested.items() if value})
+        return self._variator.plan(recent, music.usable_tracks() if music else [], exclude=rested)
 
     def _corpus(self) -> list[tuple[int, str]]:
         return self._history.recent_scripts() if self._history and self._similarity_threshold else []

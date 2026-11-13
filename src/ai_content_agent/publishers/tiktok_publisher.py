@@ -264,6 +264,21 @@ class TikTokPublisher(Publisher):
         url = f"https://www.tiktok.com/@{username}/video/{post_id}" if post_id and username else None
         return PublishResult(platform=self.name, remote_id=post_id or publish_id, url=url, status=status, raw=init)
 
+    def stats(self, remote_ids: list[str]) -> dict[str, dict]:
+        """View, like and comment counts via /v2/video/query/ (needs the `video.list` scope — run
+        `tiktok-auth --scope user.info.basic,video.publish,video.list`). Posts recorded only by
+        their publish id (still "processing" when saved) cannot be looked up."""
+
+        video_ids = [remote_id for remote_id in remote_ids if remote_id.isdigit()]
+        result: dict[str, dict] = {}
+        for start in range(0, len(video_ids), 20):
+            data = self._call("/video/query/?fields=id,view_count,like_count,comment_count",
+                              {"filters": {"video_ids": video_ids[start:start + 20]}})
+            for item in data.get("videos") or []:
+                result[str(item.get("id"))] = {"views": item.get("view_count"), "likes": item.get("like_count"),
+                                               "comments": item.get("comment_count")}
+        return result
+
     def _wait_for_publish(self, publish_id: str) -> tuple[str, str | None]:
         """Poll until TikTok finishes; a timeout is not a failure — processing just takes longer."""
 

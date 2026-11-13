@@ -178,10 +178,104 @@ function publishLinks(publishes) {
   return el("div", { class: "links" }, publishes.map((p) => {
     const label = PLATFORM_LABELS[p.platform] || p.platform;
     const href = p.url && safeUrl(p.url);
+    const views = p.views != null ? ` · ${compactNumber(p.views)} lượt xem` : "";
+    const title = p.stats_at ? `Lượt xem cập nhật ${relativeTime(p.stats_at)}` : p.remote_id;
     return href
-      ? el("a", { class: "platform-link", href, target: "_blank", rel: "noopener noreferrer", text: `${label} ↗` })
-      : el("span", { class: "badge neutral", text: label, title: p.remote_id });
+      ? el("a", { class: "platform-link", href, target: "_blank", rel: "noopener noreferrer", title, text: `${label}${views} ↗` })
+      : el("span", { class: "badge neutral", text: `${label}${views}`, title });
   }));
+}
+
+function compactNumber(n) {
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1).replace(/\.0$/, "")}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1).replace(/\.0$/, "")}K`;
+  return String(n);
+}
+
+// ---------- format performance ----------
+
+const DIMENSION_LABELS = { hook: "Cách mở đầu", visual_style: "Phong cách hình", voice: "Giọng đọc", music: "Nhạc nền" };
+const FORMAT_STATUS = {
+  ok: ["đang dùng", "ok"],
+  weak: ["tạm nghỉ", "bad"],
+  few: ["ít dữ liệu", "neutral"],
+};
+const FORMAT_STATUS_HINT = {
+  ok: "Vẫn nằm trong vòng xoay",
+  weak: "Ít lượt xem hơn hẳn video điển hình: tạm không dùng cho video mới, tới khi số liệu cũ hết hạn",
+  few: "Chưa đủ số video để kết luận — vẫn được dùng",
+};
+
+function renderPerformance(report) {
+  const panel = $("performance-panel");
+  panel.hidden = report === null;
+  if (report === null || !changed("performance", report)) return;
+  const prune = report.auto_prune !== false;
+  $("performance-note").textContent = report.scored_runs === 0 ? [
+    `Chưa có video nào đủ điều kiện: cần bài đã đăng ít nhất ${Math.round(report.min_age_hours)} giờ và đã lấy được lượt xem.`,
+    "Lượt xem được cập nhật tự động định kỳ, hoặc bấm nút bên phải.",
+  ].join(" ") : [
+    `${report.scored_runs} video được tính (đăng trước đó ít nhất ${Math.round(report.min_age_hours)} giờ, trong ${report.window_days} ngày qua).`,
+    "Điểm ×1 = bằng một video điển hình trên cùng nền tảng.",
+    report.enough_data
+      ? (prune ? `Kiểu có từ ${report.min_samples} video mà điểm dưới ×${report.weak_ratio} được tạm nghỉ khỏi vòng xoay.`
+        : "Tự tạm nghỉ kiểu kém đang tắt (AUTO_PRUNE_FORMATS=false).")
+      : `Cần ít nhất ${report.min_runs} video để bắt đầu tạm nghỉ kiểu kém.`,
+    report.stats_updated_at ? `Số liệu cập nhật ${relativeTime(report.stats_updated_at)}.` : "",
+  ].join(" ");
+  const tables = Object.entries(report.dimensions).filter(([, options]) => options.length).map(([dimension, options]) => {
+    const best = Math.max(...options.map((o) => o.score), 1);
+    return el("div", { class: "format-table" }, [
+      el("div", { class: "mono label", text: `> ${DIMENSION_LABELS[dimension] || dimension}` }),
+      el("div", { class: "table-wrap" }, el("table", {}, [
+        el("thead", {}, el("tr", {}, [
+          el("th", { text: "Kiểu" }), el("th", { text: "Video" }),
+          el("th", { text: "Lượt xem", title: "Trung vị lượt xem của các video dùng kiểu này" }),
+          el("th", { text: "Điểm", title: "×1 = bằng một video điển hình trên cùng nền tảng" }),
+          el("th", { text: "Trạng thái" }),
+        ])),
+        el("tbody", {}, options.map((o) => {
+          const [label, tone] = FORMAT_STATUS[!prune && o.status === "weak" ? "ok" : o.status] || [o.status, "neutral"];
+          const bar = el("span", { class: `score-bar ${o.status}` });
+          bar.style.width = `${Math.max(4, Math.round((o.score / best) * 100))}%`;
+          return el("tr", { class: o.status === "weak" && prune ? "rested" : "" }, [
+            el("td", { "data-label": "Kiểu", text: dimension === "hook" ? HOOK_LABELS[o.option] || o.option : o.option }),
+            el("td", { "data-label": "Video", text: String(o.runs) }),
+            el("td", { "data-label": "Lượt xem", text: compactNumber(o.median_views) }),
+            el("td", { "data-label": "Điểm" }, el("span", { class: "score" }, [
+              el("span", { class: "score-value", text: `×${o.score.toFixed(2)}` }), el("span", { class: "score-track" }, bar),
+            ])),
+            el("td", { "data-label": "Trạng thái" }, el("span", {}, el("span", {
+              class: `badge ${tone}`, text: label, title: FORMAT_STATUS_HINT[o.status] || "" }))),
+          ]);
+        })),
+      ])),
+    ]);
+  });
+  $("performance").replaceChildren(...tables);
+}
+
+async function refreshPerformance() {
+  const button = $("performance-refresh");
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    const { updated } = await api("/api/performance/refresh", { method: "POST" });
+    const parts = Object.entries(updated).map(([platform, result]) =>
+      `${PLATFORM_LABELS[platform] || platform}: ${typeof result === "number" ? `${result} bài` : "lỗi"}`);
+    const failed = Object.entries(updated).filter(([, result]) => typeof result !== "number");
+    toast(failed.length ? "warn" : "ok", "VIEWS UPDATED", parts.length ? parts.join(" · ") : "Chưa có bài đăng nào để lấy số liệu");
+    for (const [platform, message] of failed) toast("bad", PLATFORM_LABELS[platform] || platform, message);
+    state.signatures.performance = undefined;
+    state.signatures.runs = undefined;
+    await refresh();
+  } catch (err) {
+    if (err instanceof AuthError) showAuth(true);
+    else toast("bad", "VIEWS UPDATE FAILED", err.message);
+  } finally {
+    button.disabled = false;
+    button.classList.remove("busy");
+  }
 }
 
 /** Skip DOM work when the data for a region has not changed, so running CSS animations are not restarted. */
@@ -1356,9 +1450,9 @@ async function refresh() {
       state.configLoaded = true;
     }
     const optional = (path) => api(path).catch((err) => { if (err instanceof AuthError) throw err; return null; });
-    const [stats, runs, errors, jobList, schedule, reviews, batches, drafts] = await Promise.all([
+    const [stats, runs, errors, jobList, schedule, reviews, batches, drafts, performance] = await Promise.all([
       api("/api/stats"), api("/api/runs"), api("/api/errors"), api("/api/jobs"), api("/api/schedule"),
-      api("/api/reviews"), optional("/api/batches"), optional("/api/drafts"),
+      api("/api/reviews"), optional("/api/batches"), optional("/api/drafts"), optional("/api/performance"),
     ]);
     jobs = jobList;
     showApp();
@@ -1370,6 +1464,7 @@ async function refresh() {
     renderReviews(reviews);
     renderBatches(batches);
     renderDrafts(drafts);
+    renderPerformance(performance);
     $("script-submit").hidden = drafts === null;
     state.firstLoad = false;
     $("updated-at").textContent = `telemetry synced ${new Date().toLocaleTimeString("vi-VN")}`;
@@ -1440,6 +1535,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("reviews").addEventListener("click", onReviewClick);
   $("runs").addEventListener("click", onRunsClick);
   initScheduleEditor();
+  $("performance-refresh").addEventListener("click", refreshPerformance);
   $("script-submit").addEventListener("click", submitScript);
   $("drafts").addEventListener("click", onDraftClick);
   $("drafts").addEventListener("input", onDraftInput);

@@ -11,6 +11,7 @@ from ai_content_agent.config import Config
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.batch import BatchRunner, BatchStore
 from ai_content_agent.pipeline.drafts import DraftStore
+from ai_content_agent.pipeline.performance import StatsRefresher
 from ai_content_agent.pipeline.scheduler import ScheduleManager, ScheduleStore
 from ai_content_agent.web.app import create_app
 from ai_content_agent.web.jobs import BatchWorker, JobManager
@@ -65,6 +66,8 @@ def serve(
         state=history,
     ).start()
 
+    stats_refresher = StatsRefresher(agent.refresh_stats, hours=max(0, config.stats_refresh_hours)).start()
+
     token = config.dashboard_token or secrets.token_urlsafe(24)
     app = create_app(
         history=history,
@@ -76,6 +79,8 @@ def serve(
         pipeline_factory=agent.build_pipeline,
         batches=batches,
         drafts=drafts,
+        performance=agent.performance,
+        refresh_stats=agent.refresh_stats,
     )
 
     if not _is_loopback(host):
@@ -96,3 +101,4 @@ def serve(
         batch_worker.stop()
         jobs.shutdown()
         schedule.shutdown()
+        stats_refresher.stop()

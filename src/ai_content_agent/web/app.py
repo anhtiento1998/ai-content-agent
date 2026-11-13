@@ -126,6 +126,8 @@ def create_app(
     pipeline_factory: Callable[..., ContentPipeline] | None = None,
     batches: BatchStore | None = None,
     drafts: DraftStore | None = None,
+    performance: Callable[[], dict] | None = None,
+    refresh_stats: Callable[[], dict] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="AI Content Agent", docs_url=None, redoc_url=None, openapi_url=None)
     expected = token.encode()
@@ -275,6 +277,20 @@ def create_app(
         _open_draft(draft_id)
         _drafts().set_status(draft_id, DISCARDED)
         return {"status": DISCARDED}
+
+    @api.get("/performance")
+    def format_performance() -> dict:
+        if performance is None:
+            raise HTTPException(status_code=501, detail="Format performance is not available on this server")
+        return performance()
+
+    @api.post("/performance/refresh")
+    def refresh_performance() -> dict:
+        """Read view counts from the platforms now, then return the updated report."""
+
+        if performance is None or refresh_stats is None:
+            raise HTTPException(status_code=501, detail="Format performance is not available on this server")
+        return {"updated": refresh_stats(), "report": performance()}
 
     def _batches() -> BatchStore:
         if batches is None:

@@ -116,6 +116,10 @@ _MIGRATIONS = {
     "publishes": {
         "status": "TEXT",
         "deleted_at": "TEXT",
+        "views": "INTEGER",
+        "likes": "INTEGER",
+        "comments": "INTEGER",
+        "stats_at": "TEXT",
     },
 }
 
@@ -136,6 +140,10 @@ class PublishRecord:
     created_at: str
     status: str | None = None
     deleted_at: str | None = None
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    stats_at: str | None = None
 
 
 @dataclass
@@ -191,7 +199,7 @@ _RUN_COLUMNS = (
     "id, topic, title, video_path, created_at, status, platforms, thumbnail_path, script_json,"
     " variation_json, provenance_json, similarity, similar_to, cost_usd"
 )
-_PUBLISH_COLUMNS = "run_id, platform, remote_id, url, created_at, status, deleted_at"
+_PUBLISH_COLUMNS = "run_id, platform, remote_id, url, created_at, status, deleted_at, views, likes, comments, stats_at"
 
 
 def _json(value: str | None):
@@ -410,6 +418,43 @@ class HistoryStore:
                 (run_id, platform, last_ok),
             ).fetchone()
         return row[0] if row else None
+
+    # ---------- view statistics ----------
+
+    def live_posts(self, *, days: int = 60) -> list[dict]:
+        """Posts still up from the last `days` days: {id, run_id, platform, remote_id, created_at}."""
+
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT id, run_id, platform, remote_id, created_at FROM publishes"
+                " WHERE deleted_at IS NULL AND created_at >= ? ORDER BY id",
+                (_since(24 * days),),
+            ).fetchall()
+        return [dict(zip(("id", "run_id", "platform", "remote_id", "created_at"), row)) for row in rows]
+
+    def save_stats(self, publish_id: int, *, views: int | None, likes: int | None = None,
+                   comments: int | None = None) -> None:
+        with closing(self._connect()) as conn:
+            conn.execute("UPDATE publishes SET views = ?, likes = ?, comments = ?, stats_at = ? WHERE id = ?",
+                         (views, likes, comments, _now(), publish_id))
+            conn.commit()
+
+    def performance_rows(self, *, days: int = 60) -> list[dict]:
+        """One row per live post with a view count: {run_id, platform, views, created_at, variation}."""
+
+        with closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT p.run_id, p.platform, p.views, p.created_at, r.variation_json FROM publishes p"
+                " JOIN runs r ON r.id = p.run_id"
+                " WHERE p.deleted_at IS NULL AND p.views IS NOT NULL AND p.created_at >= ?",
+                (_since(24 * days),),
+            ).fetchall()
+        return [{"run_id": run_id, "platform": platform, "views": views, "created_at": created_at,
+                 "variation": _json(variation) or {}} for run_id, platform, views, created_at, variation in rows]
+
+    def last_stats_at(self) -> str | None:
+        with closing(self._connect()) as conn:
+            return conn.execute("SELECT MAX(stats_at) FROM publishes").fetchone()[0]
 
     # ---------- costs ----------
 

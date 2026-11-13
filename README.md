@@ -154,7 +154,7 @@ ai-content-agent mcp          # server MCP qua stdio
   ai-content-agent>", "args": ["mcp"]}}}` và đặt thư mục làm việc là thư mục
   dự án (nơi có `.env`).
 
-17 công cụ: `status`, `produce_video`, `job_status`, `list_jobs`,
+18 công cụ: `status`, `format_performance`, `produce_video`, `job_status`, `list_jobs`,
 `create_batch`, `list_batches`, `batch_control`, `review_queue`, `get_run`,
 `recent_runs`, `recent_errors`, `reject_run`, `export_edit_bundle`,
 `export_capcut`, và ba công cụ đăng bài `approve_run`, `retry_publish`,
@@ -356,6 +356,44 @@ Kịch bản mới được so với các kịch bản gần đây (trùng cụm
 từ `SIMILARITY_THRESHOLD`% trở lên (mặc định 35), app yêu cầu AI viết lại
 một lần theo góc khác; độ giống còn lại hiện trên thẻ Chờ duyệt (đỏ nếu
 vượt ngưỡng). Tắt toàn bộ bằng `VARIATION=false`.
+
+## Kiểu video nào được xem nhiều (tự tạm nghỉ kiểu kém)
+
+App đọc **lượt xem** các bài còn đang đăng (YouTube, TikTok, Facebook) rồi
+chấm điểm từng lựa chọn của bốn chiều biến thể: cách mở đầu, phong cách
+hình, giọng đọc, nhạc nền. Kết quả hiện ở khu **Hiệu quả theo kiểu video**
+trên dashboard; lịch sử cũng ghi lượt xem cạnh từng link.
+
+Cách chấm, để một video viral hay một nền tảng đông người không quyết định
+tất cả:
+
+- Chỉ tính bài đã đăng ít nhất **48 giờ**, trong **60 ngày** gần nhất.
+- Lượt xem mỗi bài chia cho **trung vị lượt xem trên cùng nền tảng** — điểm
+  ×1 nghĩa là bằng một bài điển hình ở đó. Điểm của một video là trung bình
+  các nền tảng; điểm của một kiểu là **trung vị** các video dùng kiểu đó.
+- Một kiểu bị **tạm nghỉ** khỏi vòng xoay khi: có ít nhất 3 video dùng nó,
+  tổng cộng có ít nhất 8 video được tính, và điểm dưới ×0,5
+  (`PRUNE_WEAK_RATIO=50`). Mỗi chiều luôn giữ ít nhất 2 lựa chọn; kiểu tệ
+  nhất bị nghỉ trước. Khi số liệu cũ quá 60 ngày, kiểu đó tự quay lại để
+  thử lại.
+- Với số video ít, đây là quy tắc kinh nghiệm chứ không phải thống kê chặt
+  chẽ — bảng hiện rõ số video để bạn tự đánh giá. Tắt việc tự tạm nghỉ bằng
+  `AUTO_PRUNE_FORMATS=false` (bảng vẫn hiện).
+
+Lượt xem tự cập nhật mỗi `STATS_REFRESH_HOURS` giờ (mặc định 12) khi
+dashboard đang chạy; bấm **↻ Cập nhật lượt xem** hoặc chạy:
+
+```bash
+ai-content-agent stats            # cập nhật + in bảng
+ai-content-agent stats --no-refresh
+```
+
+Quyền cần có: YouTube dùng luôn quyền đã cấp. TikTok cần thêm quyền
+`video.list` — chạy lại `ai-content-agent tiktok-auth --scope
+user.info.basic,video.publish,video.list` (app TikTok phải được cấp quyền
+này). Facebook cần `read_insights`; phần đọc số liệu Facebook và TikTok viết
+theo tài liệu, **chưa thử với tài khoản thật**. Nền tảng nào lỗi thì bỏ qua,
+không ảnh hưởng nền tảng khác.
 
 ## Nguồn gốc (provenance)
 
@@ -703,7 +741,7 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
 - [x] Biến thể (hook, hình, giọng, nhạc) và chống trùng kịch bản.
 - [x] Sổ giấy phép nhạc, provenance.json, metadata, nhãn AI trên video.
 - [ ] Chứng chỉ C2PA có chữ ký số.
-- [ ] Tự loại định dạng kém dựa trên số liệu xem (cần tài khoản thật chạy một thời gian).
+- [x] Đọc lượt xem và tự tạm nghỉ kiểu video kém (cần chạy thật một thời gian mới có đủ số liệu).
 - [ ] Muse Video — chờ Meta mở API chính thức, rồi implement
       `MetaMuseVideoProvider.generate_clip()`.
 - [x] Quản lý lịch và danh sách chủ đề ngay trên dashboard.

@@ -167,7 +167,25 @@ class ContentAgent:
             similarity_threshold=max(0, c.similarity_threshold) / 100,
             require_music_license=c.require_music_license,
             daily_budget_usd=c.budget(),
+            prune_formats=c.auto_prune_formats,
+            weak_ratio=max(1, c.prune_weak_ratio) / 100,
         )
+
+    def refresh_stats(self) -> dict:
+        """Read view counts for live posts from every platform. {platform: updated count or error}."""
+
+        from ai_content_agent.pipeline.performance import refresh_stats
+        from ai_content_agent.publishers import PUBLISHERS
+
+        return refresh_stats(HistoryStore(self._config.history_db_path), self.build_publishers(list(PUBLISHERS)))
+
+    def performance(self) -> dict:
+        from ai_content_agent.pipeline.performance import analyze
+
+        report = analyze(HistoryStore(self._config.history_db_path),
+                         weak_ratio=max(1, self._config.prune_weak_ratio) / 100)
+        report["auto_prune"] = self._config.auto_prune_formats
+        return report
 
     def capcut_exporter(self, *, force: bool | None = None) -> CapCutExporter:
         c = self._config

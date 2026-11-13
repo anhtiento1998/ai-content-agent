@@ -540,3 +540,18 @@ input[type="time"]:focus { outline: none; border-color: var(--cyan); box-shadow:
 .topic-text .muted { font-size: 0.74rem; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 2px; }
 #schedule-topic-form textarea { min-height: 70px; font-family: var(--sans); font-size: 0.9rem; }
 @media (max-width: 560px) { .schedule-when { grid-template-columns: 1fr; } }
+
+/* ---------- format performance ---------- */
+.performance { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 430px), 1fr)); gap: 18px; }
+.format-table { min-width: 0; }
+.format-table table { width: 100%; margin-top: 6px; }
+.format-table td, .format-table th { padding: 7px 8px; font-size: 0.84rem; }
+.format-table tr.rested td:first-child { text-decoration: line-through; color: var(--muted); }
+.score-value { font: 600 0.8rem var(--mono); display: inline-block; min-width: 46px; }
+.score-track { display: inline-block; width: 56px; height: 5px; border-radius: 3px; background: rgba(91, 100, 136, 0.3); vertical-align: middle; overflow: hidden; }
+.score-bar { display: block; height: 100%; border-radius: 3px; background: var(--cyan); }
+.score-bar.weak { background: var(--red); }
+.score-bar.few { background: var(--muted); }
+.format-table td:first-child { min-width: 150px; }
+.format-table .badge { white-space: nowrap; }
+.score { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }

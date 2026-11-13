@@ -173,6 +173,14 @@ class AgentTools:
 
         return [asdict(err) for err in self.history.recent_errors(limit=max(1, min(limit, 50)))]
 
+    def format_performance(self, refresh: bool = False) -> dict:
+        """Which hooks, visual styles, voices and music tracks earn views (score 1.0 = a typical post;
+        "weak" options are rested from the rotation). refresh=true reads view counts from the platforms first."""
+
+        agent = ContentAgent(self.config)
+        updated = agent.refresh_stats() if refresh else None
+        return {"updated": updated, **agent.performance()}
+
     def job_status(self, job_id: str) -> dict:
         """Progress of a produce / publish job: status, stage, counts, error, cost."""
 
@@ -313,7 +321,7 @@ class AgentTools:
 
 
 TOOL_NAMES = (
-    "status", "produce_video", "job_status", "list_jobs", "create_batch", "list_batches", "batch_control",
+    "status", "format_performance", "produce_video", "job_status", "list_jobs", "create_batch", "list_batches", "batch_control",
     "review_queue", "get_run", "recent_runs", "recent_errors", "reject_run", "approve_run", "retry_publish",
     "takedown", "export_edit_bundle", "export_capcut",
 )

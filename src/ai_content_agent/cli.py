@@ -104,6 +104,9 @@ def main() -> None:
     capcut_p.add_argument("--force", action="store_true",
                           help="Write even if CapCut is running or newer than 9.x (may corrupt nothing, but may not open)")
 
+    stats_p = sub.add_parser("stats", help="Read view counts from the platforms and show which formats work")
+    stats_p.add_argument("--no-refresh", action="store_true", help="Only show the report from stored numbers")
+
     sub.add_parser("mcp", help="Run the MCP server on stdio so Claude Code / Claude Desktop can drive the agent")
 
     dash_p = sub.add_parser("dashboard", help="Start the web dashboard")
@@ -222,6 +225,22 @@ def main() -> None:
             )
         authorize(config.youtube_token_file, config.youtube_client_secret_file)
         print(f"YouTube token saved to {config.youtube_token_file}")
+
+    elif args.command == "stats":
+        if not args.no_refresh:
+            for platform, result in agent.refresh_stats().items():
+                print(f"{platform}: {f'{result} post(s) updated' if isinstance(result, int) else f'failed — {result}'}")
+        report = agent.performance()
+        print(f"Scored runs: {report['scored_runs']} (posts older than {report['min_age_hours']:.0f} h, last "
+              f"{report['window_days']} days). " + ("" if report["enough_data"] else
+              f"Formats are rested only from {report['min_runs']} scored runs."))
+        for dimension, options in report["dimensions"].items():
+            if options:
+                print(f"\n{dimension}")
+            for item in options:
+                flag = {"weak": "  <- rested (few views)", "few": "  (too few runs to judge)"}.get(item["status"], "")
+                print(f"  {item['option']:<22} runs {item['runs']:>3}  median views {item['median_views']:>8}  "
+                      f"score x{item['score']:.2f}{flag}")
 
     elif args.command == "tiktok-auth":
         from ai_content_agent.publishers.tiktok_auth import SCOPES_BY_MODE, TikTokAuthError, authorize as tiktok_login

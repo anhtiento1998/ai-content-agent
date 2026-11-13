@@ -166,6 +166,34 @@ class FacebookPublisher(Publisher):
             raise RuntimeError(f"Facebook video upload returned no id: {resp}")
         return PublishResult(platform=self.name, remote_id=video_id, url=f"https://www.facebook.com/watch/?v={video_id}", raw=resp)
 
+    def stats(self, remote_ids: list[str]) -> dict[str, dict]:
+        """Play counts: reel insights first, then the video's own `views` field. Written from the
+        documented Graph API shapes and not yet checked against a live Page (needs `read_insights`)."""
+
+        token = self._access_token
+        result: dict[str, dict] = {}
+        for remote_id in remote_ids:
+            views = None
+            insights = http.send(
+                lambda: requests.get(f"{_GRAPH}/{remote_id}/video_insights",
+                                     params={"metric": "fb_reels_total_plays,blue_reels_play_count",
+                                             "access_token": token}, timeout=30),
+                "reading Facebook reel insights", attempts=self._retries).json()
+            for metric in insights.get("data") or []:
+                values = metric.get("values") or []
+                if values and isinstance(values[0].get("value"), int):
+                    views = max(views or 0, values[0]["value"])
+            if views is None:
+                node = http.send(
+                    lambda: requests.get(f"{_GRAPH}/{remote_id}", params={"fields": "views", "access_token": token},
+                                         timeout=30),
+                    "reading Facebook video views", attempts=self._retries).json()
+                if isinstance(node.get("views"), int):
+                    views = node["views"]
+            if views is not None:
+                result[remote_id] = {"views": views, "likes": None, "comments": None}
+        return result
+
     def delete(self, remote_id: str) -> None:
         token = self._access_token
         resp = http.send(lambda: requests.delete(f"{_GRAPH}/{remote_id}", params={"access_token": token}, timeout=30),
