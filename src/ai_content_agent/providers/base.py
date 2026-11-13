@@ -92,3 +92,14 @@ class VoiceGenerator(ABC):
     def synthesize(self, text: str, out_path: str, *, voice: str | None = None) -> None:
         """Write speech for `text` to `out_path` as a WAV file. `voice` overrides the configured
         voice for this call (the variation engine rotates VOICE_NAMES)."""
+
+
+class AvatarGenerator(ABC):
+    """Talking-head clip per scene, lip-synced to that scene's narration."""
+
+    name: str
+
+    @abstractmethod
+    def animate(self, audio_path: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
+        """Write a video of the avatar speaking the audio in `audio_path` (a WAV file) to `out_path`.
+        The clip's own audio track is ignored."""

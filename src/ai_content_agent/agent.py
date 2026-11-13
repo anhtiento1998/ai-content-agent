@@ -11,7 +11,7 @@ from ai_content_agent.config import Config
 from ai_content_agent.export.capcut import CapCutExporter
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline
-from ai_content_agent.providers import TEXT_PROVIDERS, VISUAL_PROVIDERS, VOICE_PROVIDERS
+from ai_content_agent.providers import AVATAR_PROVIDERS, TEXT_PROVIDERS, VISUAL_PROVIDERS, VOICE_PROVIDERS
 from ai_content_agent.publishers import (
     Disclosure,
     FacebookPublisher,
@@ -72,11 +72,24 @@ class ContentAgent:
             {"model": c.voice_model, "voice": c.voice_name},
         )
 
+    def _build_avatar_generator(self):
+        c = self._config
+        if not c.avatar_provider or c.avatar_provider == "none":
+            return None
+        if c.avatar_provider not in AVATAR_PROVIDERS:
+            raise ValueError(f"Unknown AVATAR_PROVIDER: {c.avatar_provider!r} — choose none or one of "
+                             f"{', '.join(AVATAR_PROVIDERS)}")
+        return AVATAR_PROVIDERS[c.avatar_provider](workflow=c.avatar_workflow, image=c.avatar_image,
+                                                   url=c.comfyui_url)
+
     def build_studio(self) -> VideoStudio:
         c = self._config
+        avatar = self._build_avatar_generator()
+        full_avatar = avatar is not None and c.avatar_layout == "full"
         return VideoStudio(
             writer=self._build_text_generator(),
-            visuals=self._build_visual_generator(),
+            # A full-frame avatar replaces the scene visuals, so no image engine (or its key) is needed.
+            visuals=VISUAL_PROVIDERS["card"]() if full_avatar else self._build_visual_generator(),
             voice=self._build_voice_generator(),
             settings=StudioSettings(
                 language=c.content_language,
@@ -90,9 +103,13 @@ class ContentAgent:
                 require_music_license=c.require_music_license,
                 video_encoder=c.video_encoder,
                 pricing_file=c.pricing_file,
+                avatar_layout=c.avatar_layout,
+                avatar_position=c.avatar_position,
+                avatar_size_percent=c.avatar_size,
                 keep_intermediates=c.keep_intermediates,
             ),
             aligner=build_aligner(c.caption_aligner, model=c.whisper_model, language=c.content_language),
+            avatar=avatar,
         )
 
     def build_variator(self) -> Variator | None:

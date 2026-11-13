@@ -90,6 +90,10 @@ class EditBundleExporter:
             # Connected clips: offset is in the parent's time, i.e. its own start.
             ET.SubElement(clip, "asset-clip", ref=voice_ref, lane="-1", name=f"Giọng {scene['index']}",
                           offset="0s", start="0s", duration=_t(scene["voice_duration"], fps))
+            if scene.get("avatar"):  # corner talking head: a connected clip above the visual, to place by hand
+                avatar_ref = asset(stage(scene["avatar"]), video=True, audio=False, duration=scene["duration"])
+                ET.SubElement(clip, "asset-clip", ref=avatar_ref, lane="2", name=f"Avatar {scene['index']}",
+                              offset="0s", start="0s", duration=_t(scene["duration"], fps))
 
         if first_clip is not None and timeline.get("music"):
             music = stage(timeline["music"])

@@ -30,6 +30,7 @@ const STAGES = {
   script: "Kịch bản",
   voice: "Giọng đọc",
   visual: "Hình ảnh",
+  avatar: "Avatar người nói",
   render: "Dựng video",
   video: "Tạo video",
   thumbnail: "Thumbnail",
@@ -57,7 +58,7 @@ const SEQUENCE = [
   ["publish", "Đăng bài"],
 ];
 const FAILED_TO_STEP = {
-  setup: "script", script: "script", voice: "assets", visual: "assets",
+  setup: "script", script: "script", voice: "assets", visual: "assets", avatar: "assets",
   render: "render", thumbnail: "render", video: "render", publish: "publish",
 };
 
@@ -419,7 +420,9 @@ function toast(tone, title, message) {
 
 function renderConfig(cfg) {
   state.config = cfg;
-  $("provider-chips").replaceChildren(...ENGINE_CHIPS.map(([label, key, group]) => {
+  const chips = cfg.avatar_provider && cfg.avatar_provider !== "none"
+    ? [...ENGINE_CHIPS, ["avatar", "avatar_provider", "avatar_providers"]] : ENGINE_CHIPS;
+  $("provider-chips").replaceChildren(...chips.map(([label, key, group]) => {
     const name = cfg[key];
     const info = (cfg[group] || {})[name];
     return el("span", { class: `chip ${info && info.ready ? "on" : "off"}`, title: info ? info.note : "Engine không hợp lệ" }, [

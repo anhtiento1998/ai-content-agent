@@ -16,6 +16,14 @@ already have working:
 API used: POST /prompt, GET /history/<id>, GET /view. One scene is generated
 at a time — a local GPU does not run two video models at once. No workflow is
 bundled: they depend on the models and custom nodes installed on your machine.
+
+Talking-head avatar (AVATAR_PROVIDER=comfyui): a lip-sync workflow (SadTalker,
+LatentSync, InfiniteTalk, Wan S2V, ...) that takes a portrait and an audio
+file and saves a video. Its placeholders are "{{audio}}" (the scene's voice
+track, uploaded to ComfyUI's input folder first) and "{{image}}" (the
+portrait from AVATAR_IMAGE, uploaded once); "{{seed}}", "{{width}}" and
+"{{height}}" work as above. The clip's own audio is ignored — the studio
+keeps its voice track.
 """
 
 from __future__ import annotations
@@ -29,7 +37,7 @@ from pathlib import Path
 
 import requests
 
-from .base import ImageGenerator, VideoGenerator
+from .base import AvatarGenerator, ImageGenerator, VideoGenerator
 
 _IMAGE_EXT = (".png", ".jpg", ".jpeg", ".webp")
 _VIDEO_EXT = (".mp4", ".webm", ".mov", ".mkv", ".gif")
@@ -60,6 +68,8 @@ class _ComfyUI:
     kind = "image"
     extensions = _IMAGE_EXT
     max_concurrency = 1
+    placeholder = "prompt"  # the placeholder a workflow of this kind cannot do without
+    setting = "COMFYUI_WORKFLOW"
 
     def __init__(
         self,
@@ -72,21 +82,21 @@ class _ComfyUI:
     ) -> None:
         if not workflow:
             raise ValueError(
-                f"VISUAL_PROVIDER={self.name} needs COMFYUI_WORKFLOW: the path of a workflow exported from "
+                f"{self.name} needs {self.setting}: the path of a workflow exported from "
                 "ComfyUI with “Save (API Format)”"
             )
         path = Path(workflow)
         if not path.is_file():
-            raise FileNotFoundError(f"COMFYUI_WORKFLOW {workflow!r} not found")
+            raise FileNotFoundError(f"{self.setting} {workflow!r} not found")
         try:
             self._workflow = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as exc:
-            raise ValueError(f"COMFYUI_WORKFLOW {workflow!r} is not valid JSON: {exc}") from exc
-        if "{{prompt}}" not in json.dumps(self._workflow):
-            raise ValueError(f"COMFYUI_WORKFLOW {workflow!r} has no {{{{prompt}}}} placeholder for the scene description")
+            raise ValueError(f"{self.setting} {workflow!r} is not valid JSON: {exc}") from exc
+        if "{{" + self.placeholder + "}}" not in json.dumps(self._workflow):
+            raise ValueError(f"{self.setting} {workflow!r} has no {{{{{self.placeholder}}}}} placeholder")
         if not all(isinstance(node, dict) and "class_type" in node for node in self._workflow.values()):
             raise ValueError(
-                f"COMFYUI_WORKFLOW {workflow!r} is not in API format — export it with “Save (API Format)”, "
+                f"{self.setting} {workflow!r} is not in API format — export it with “Save (API Format)”, "
                 "not the normal Save"
             )
         self._url = url.rstrip("/")
@@ -95,9 +105,28 @@ class _ComfyUI:
         self._poll_seconds = poll_seconds
 
     def _generate(self, prompt: str, out_path: str, aspect_ratio: str) -> None:
+        self._run({"prompt": prompt}, out_path, aspect_ratio)
+
+    def _upload(self, path: str) -> str:
+        """Copy a local file into ComfyUI's input folder; returns the name its loader nodes use."""
+
+        source = Path(path)
+        if not source.is_file():
+            raise FileNotFoundError(f"{source} not found")
+        try:
+            with open(source, "rb") as f:
+                reply = requests.post(f"{self._url}/upload/image", files={"image": (source.name, f)},
+                                      data={"overwrite": "true", "type": "input"}, timeout=300).json()
+        except requests.ConnectionError as exc:
+            raise ConnectionError(f"Cannot reach ComfyUI at {self._url} — start ComfyUI first (COMFYUI_URL)") from exc
+        if not reply.get("name"):
+            raise RuntimeError(f"ComfyUI did not accept {source.name}: {json.dumps(reply)[:300]}")
+        return f"{reply['subfolder']}/{reply['name']}" if reply.get("subfolder") else reply["name"]
+
+    def _run(self, values: dict, out_path: str, aspect_ratio: str) -> None:
         width, height = _SIZES[self.kind].get(aspect_ratio, _SIZES[self.kind]["9:16"])
         workflow = fill_workflow(copy.deepcopy(self._workflow), {
-            "prompt": prompt, "seed": random.randint(1, 2**31 - 1), "width": width, "height": height,
+            "seed": random.randint(1, 2**31 - 1), "width": width, "height": height, **values,
         })
         try:
             queued = requests.post(f"{self._url}/prompt", json={"prompt": workflow, "client_id": uuid.uuid4().hex},
@@ -157,3 +186,32 @@ class ComfyUIVideoProvider(_ComfyUI, VideoGenerator):
 
     def generate_clip(self, prompt: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
         self._generate(prompt, out_path, aspect_ratio)
+
+
+class ComfyUIAvatarProvider(_ComfyUI, AvatarGenerator):
+    """Lip-synced talking head per scene from a portrait and the scene's voice track."""
+
+    name = "comfyui"
+    kind = "video"
+    extensions = _VIDEO_EXT
+    placeholder = "audio"
+    setting = "AVATAR_WORKFLOW"
+
+    def __init__(self, workflow: str | None, image: str | None, url: str = "http://127.0.0.1:8188", **kwargs) -> None:
+        super().__init__(workflow, url, **kwargs)
+        self._needs_image = "{{image}}" in json.dumps(self._workflow)
+        if self._needs_image and not (image and Path(image).is_file()):
+            raise FileNotFoundError(
+                f"AVATAR_IMAGE {image!r} not found — the avatar workflow asks for {{{{image}}}}: a portrait photo "
+                "you have the right to use"
+            )
+        self._image = image
+        self._uploaded_image: str | None = None
+
+    def animate(self, audio_path: str, out_path: str, *, aspect_ratio: str = "9:16") -> None:
+        values = {"audio": self._upload(audio_path)}
+        if self._needs_image:
+            if self._uploaded_image is None:
+                self._uploaded_image = self._upload(self._image)
+            values["image"] = self._uploaded_image
+        self._run(values, out_path, aspect_ratio)

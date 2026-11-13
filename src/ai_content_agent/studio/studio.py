@@ -26,6 +26,7 @@ from ai_content_agent.costs import CostMeter, PriceBook
 from ai_content_agent.media import encoders
 from ai_content_agent.media.ffmpeg import probe_video, wav_duration
 from ai_content_agent.providers.base import (
+    AvatarGenerator,
     ImageGenerator,
     TextGenerator,
     VideoGenerator,
@@ -58,8 +59,9 @@ _TRANSIENT_NAMES = {"APIConnectionError", "APITimeoutError", "RateLimitError", "
 # edit (storyboard, per-scene visuals and voice, captions) plus the outputs.
 _KEEP_PATTERNS = (
     "storyboard.json", "timeline.json", "scene_*_visual.*", "scene_??_voice.wav",
-    "subtitles.ass", "subtitles.srt", "final.mp4", "thumbnail.jpg", "provenance.json",
+    "subtitles.ass", "subtitles.srt", "final.mp4", "thumbnail.jpg", "provenance.json", "scene_??_avatar.mp4",
 )
+AVATAR_LAYOUTS = ("corner", "full")
 LOW_PRONUNCIATION_SCORE = 0.6  # aligner recognised fewer than this share of a scene's words
 
 
@@ -77,6 +79,11 @@ class StudioSettings:
     require_music_license: bool = True
     video_encoder: str = "auto"  # auto | libx264 | h264_nvenc | h264_qsv | h264_amf
     pricing_file: str | None = None  # JSON overriding costs.DEFAULT_PRICES
+    # With an avatar engine: "corner" = talking head in a circle over each scene's visual,
+    # "full" = the avatar fills the frame and no scene visuals are generated.
+    avatar_layout: str = "corner"
+    avatar_position: str = "bottom-left"
+    avatar_size_percent: int = 34
     scene_padding: float = 0.35
     max_workers: int = 4
     retry_attempts: int = 3
@@ -147,20 +154,35 @@ class VideoStudio:
         settings: StudioSettings | None = None,
         *,
         aligner=None,
+        avatar: AvatarGenerator | None = None,
     ) -> None:
         if not isinstance(visuals, (ImageGenerator, VideoGenerator)):
             raise TypeError(f"visual provider must be an ImageGenerator or VideoGenerator, got {visuals!r}")
+        settings = settings or StudioSettings()
+        if avatar is not None:
+            if settings.avatar_layout not in AVATAR_LAYOUTS:
+                raise ValueError(f"AVATAR_LAYOUT must be one of {', '.join(AVATAR_LAYOUTS)}, "
+                                 f"got {settings.avatar_layout!r}")
+            render.avatar_box(settings.avatar_size_percent, settings.avatar_position)  # validates the position
+        self._avatar = avatar
         self._writer = writer
         self._visuals = visuals
         self._voice = voice
-        self._settings = settings or StudioSettings()
+        self._settings = settings
         self._aligner = aligner
         self._prices = PriceBook(self._settings.pricing_file)
         self.music = MusicLibrary(self._settings.music_dir, self._settings.require_music_license)
 
     @property
     def engine_names(self) -> dict:
-        return {"text": self._writer.name, "visual": self._visuals.name, "voice": self._voice.name}
+        names = {"text": self._writer.name, "visual": self._visuals.name, "voice": self._voice.name}
+        if self._avatar is not None:
+            names["avatar"] = self._avatar.name
+        return names
+
+    @property
+    def _avatar_full(self) -> bool:
+        return self._avatar is not None and self._settings.avatar_layout == "full"
 
     def _with_retries(self, fn, *args, **kwargs):
         """Retry rate limits, 5xx and connection errors with exponential backoff; fail fast otherwise."""
@@ -266,8 +288,11 @@ class VideoStudio:
             json.dumps(storyboard.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
         scenes = storyboard.scenes
-        is_video = isinstance(self._visuals, VideoGenerator)
-        visual_files = [f"scene_{i:02d}_visual.{'mp4' if is_video else 'png'}" for i in range(1, len(scenes) + 1)]
+        avatar_files = [f"scene_{i:02d}_avatar.mp4" for i in range(1, len(scenes) + 1)] if self._avatar else []
+        # In the full layout the talking head *is* the visual: nothing else is generated.
+        is_video = self._avatar_full or isinstance(self._visuals, VideoGenerator)
+        visual_files = avatar_files if self._avatar_full else [
+            f"scene_{i:02d}_visual.{'mp4' if is_video else 'png'}" for i in range(1, len(scenes) + 1)]
         language = self._settings.language
         caption_words = [nfc(scene.narration).split() for scene in scenes]
         spoken = [spoken_words(words, language) for words in caption_words]
@@ -284,14 +309,22 @@ class VideoStudio:
         try:
             encoder = encoders.detect(self._settings.video_encoder)
             durations = [round((d + self._settings.scene_padding) * render.FPS) / render.FPS for d in voice_durations]
+            corner = self._avatar is not None and not self._avatar_full
+            if corner:
+                size, x, y = render.avatar_box(self._settings.avatar_size_percent, self._settings.avatar_position)
+                render.write_avatar_mask(size, str(work / "avatar_mask.png"), str(work / "avatar_ring.png"))
             clips, audios = [], []
             for i, duration in enumerate(durations, 1):
                 clip, audio = f"scene_{i:02d}.mp4", f"scene_{i:02d}_audio.wav"
+                base = f"scene_{i:02d}_base.mp4" if corner else clip
                 if is_video:
-                    render.video_to_clip(visual_files[i - 1], clip, duration, cwd=cwd, encoder=encoder)
+                    render.video_to_clip(visual_files[i - 1], base, duration, cwd=cwd, encoder=encoder)
                 else:
-                    render.image_to_clip(visual_files[i - 1], clip, duration, zoom_in=i % 2 == 1, cwd=cwd,
+                    render.image_to_clip(visual_files[i - 1], base, duration, zoom_in=i % 2 == 1, cwd=cwd,
                                          encoder=encoder)
+                if corner:
+                    render.overlay_avatar(base, avatar_files[i - 1], clip, duration, size=size, x=x, y=y,
+                                          mask="avatar_mask.png", ring="avatar_ring.png", cwd=cwd, encoder=encoder)
                 render.pad_audio(f"scene_{i:02d}_voice.wav", audio, duration, cwd=cwd)
                 clips.append(clip)
                 audios.append(audio)
@@ -324,11 +357,17 @@ class VideoStudio:
                 scenes=len(scenes), duration=total,
             )
             provenance["encoder"] = encoder.name
+            if self._avatar is not None:
+                provenance["engines"]["avatar"] = {
+                    "provider": self._avatar.name, "model": getattr(self._avatar, "_model", None),
+                    "layout": self._settings.avatar_layout,
+                }
             provenance["cost"] = meter.summary()
             if scores:
                 provenance["pronunciation"] = {"scene_scores": scores, "min": min(scores)}
             (work / "provenance.json").write_text(json.dumps(provenance, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo)
+            self._write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo,
+                                 avatar=self._avatar_overlay(avatar_files) if corner else None)
             fonts = self._stage_fonts(work)
             render.compose_final(
                 "visuals.mp4", "voice.wav", "subtitles.ass", "final.mp4", total, cwd=cwd, music=music, logo=logo,
@@ -397,7 +436,9 @@ class VideoStudio:
         Files already in the work folder (a resumed run) are reused, not generated again."""
 
         visual_slots = threading.Semaphore(self._visuals.max_concurrency or self._settings.max_workers)
-        total, finished, counter_lock = 2 * len(narrations), [0], threading.Lock()
+        scenes = len(narrations)
+        steps = scenes * ((0 if self._avatar_full else 1) + 1 + (1 if self._avatar else 0))  # visual, voice, avatar
+        total, finished, counter_lock = steps, [0], threading.Lock()
         report("assets", 0, total)
 
         def tick(_future: Future) -> None:
@@ -440,7 +481,8 @@ class VideoStudio:
         pool = ThreadPoolExecutor(max_workers=self._settings.max_workers, thread_name_prefix="studio")
         try:
             voices = [pool.submit(make_voice, i, text) for i, text in enumerate(narrations, 1)]
-            visuals = [pool.submit(make_visual, prompt, n) for prompt, n in zip(prompts, visual_files)]
+            visuals = [] if self._avatar_full else [
+                pool.submit(make_visual, prompt, n) for prompt, n in zip(prompts, visual_files)]
             for future in (*voices, *visuals):
                 future.add_done_callback(tick)
             durations = [_await(f, "voice", i) for i, f in enumerate(voices, 1)]
@@ -450,10 +492,30 @@ class VideoStudio:
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         pool.shutdown()
+
+        if self._avatar is not None:
+            # One at a time, after the voices exist: lip-sync runs on the local GPU from each voice track.
+            for i in range(1, scenes + 1):
+                target = work / f"scene_{i:02d}_avatar.mp4"
+                if not _exists(target):
+                    try:
+                        self._with_retries(self._avatar.animate, str(work / f"scene_{i:02d}_voice.wav"), str(target))
+                    except Exception as exc:
+                        raise StudioStageError("avatar", f"scene {i}: {type(exc).__name__}: {exc}") from exc
+                    meter.add_video(f"{self._avatar.name}-avatar", getattr(self._avatar, "_model", None),
+                                    durations[i - 1])
+                tick(None)
         return durations
 
+    def _avatar_overlay(self, avatar_files: list[str]) -> dict:
+        """Where the corner avatar sits, for exporters that rebuild the edit."""
+
+        size, x, y = render.avatar_box(self._settings.avatar_size_percent, self._settings.avatar_position)
+        return {"files": avatar_files, "size": size, "x": x, "y": y, "position": self._settings.avatar_position}
+
     @staticmethod
-    def _write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo) -> None:
+    def _write_timeline(work, storyboard, visual_files, is_video, voice_durations, durations, music, logo,
+                        avatar: dict | None = None) -> None:
         """timeline.json: the edit decision list — what plays when. Exporters (CapCut) rebuild the
         edit from this instead of re-deriving timings."""
 
@@ -471,6 +533,7 @@ class VideoStudio:
                 "voice": f"scene_{i:02d}_voice.wav",
                 "voice_duration": voice_duration,
                 "on_screen_text": scene.on_screen_text,
+                "avatar": avatar["files"][i - 1] if avatar else None,
             })
             start += duration
         timeline = {
@@ -482,6 +545,7 @@ class VideoStudio:
             "captions": "subtitles.srt",
             "music": music,
             "logo": logo,
+            "avatar": {key: value for key, value in avatar.items() if key != "files"} if avatar else None,
             "scenes": scenes,
         }
         (work / "timeline.json").write_text(json.dumps(timeline, ensure_ascii=False, indent=2), encoding="utf-8")

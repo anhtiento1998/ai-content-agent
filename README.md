@@ -138,6 +138,46 @@ App tạo từng cảnh một (card đồ hoạ không chạy 2 model video cùn
 tối đa 30 phút mỗi cảnh. Không kèm sẵn workflow nào vì chúng phụ thuộc model
 và node bạn đã cài.
 
+## Avatar người nói (khớp miệng, chạy trên máy)
+
+Thêm một người nói khớp miệng theo giọng đọc của từng cảnh, tạo bằng workflow
+khớp miệng của bạn trong ComfyUI (SadTalker, LatentSync, InfiniteTalk, Wan
+S2V…), không tốn phí API:
+
+1. Dựng workflow chạy được trong ComfyUI: nhận **một ảnh chân dung + một
+   file âm thanh**, lưu ra **video**. Xuất bằng **Save (API Format)**.
+2. Trong file JSON, đặt `{{audio}}` vào ô chọn file âm thanh và `{{image}}`
+   vào ô chọn ảnh (có thể dùng thêm `{{seed}}`, `{{width}}`, `{{height}}`).
+3. `.env`:
+   ```
+   AVATAR_PROVIDER=comfyui
+   AVATAR_WORKFLOW=duong/dan/lipsync.json
+   AVATAR_IMAGE=duong/dan/chan-dung.png
+   AVATAR_LAYOUT=corner        # hoặc full
+   ```
+
+Hai bố cục, đổi bằng `AVATAR_LAYOUT`:
+
+- **`corner`** (mặc định): avatar trong vòng tròn viền trắng, đè lên hình
+  minh hoạ của từng cảnh. Vị trí `AVATAR_POSITION` = `bottom-left` (mặc định,
+  nằm phía trên phụ đề), `bottom-right`, `top-left`, `top-right`; cỡ
+  `AVATAR_SIZE` = % chiều rộng khung hình (mặc định 34).
+- **`full`**: avatar chiếm cả khung hình, **không tạo hình minh hoạ** nữa
+  (không tốn tiền/không cần key engine hình); phụ đề, chữ hook, nhạc, logo
+  vẫn như cũ.
+
+App gửi giọng đọc từng cảnh và ảnh chân dung vào ComfyUI (ảnh chỉ gửi một
+lần), tạo **từng cảnh một** sau khi có giọng đọc; âm thanh của clip avatar bị
+bỏ, video dùng giọng đọc gốc. Clip ngắn hơn cảnh thì được lặp lại. Khi chạy
+tiếp một lần dựng dở, clip avatar đã có được dùng lại. Bản xuất CapCut và gói
+dựng có thêm track **avatar** riêng (trong CapCut là khung chữ nhật — muốn
+bo tròn thì thêm mask trong CapCut).
+
+**Lưu ý:** chỉ dùng khuôn mặt của chính bạn hoặc người đã đồng ý. Video vẫn
+được gắn nhãn AI (nhãn trên video, mô tả, cờ `containsSyntheticMedia` của
+YouTube, `is_aigc` của TikTok). Phần gọi ComfyUI mới thử với bản giả lập;
+bước ghép hình đã dựng video thật trong test.
+
 ## Cho Claude điều khiển app (MCP server)
 
 ```bash
@@ -729,7 +769,8 @@ ffmpeg (tự skip nếu máy không có ffmpeg).
       đọc mỗi cảnh, phụ đề, nhạc nền, logo, xuất MP4.
 - [ ] **Bước 2 — App desktop Windows** (file cài `.exe`) — tạm hoãn theo yêu cầu, bạn tự đóng gói khi cần.
 - [x] P3: MCP server + skill Claude Code, chi phí từng video + hạn mức ngày, ComfyUI (Wan 2.2/FramePack chạy trên máy).
-- [ ] Engine avatar người nói (HeyGen, D-ID…) — chưa làm, cần chọn dịch vụ trả phí.
+- [x] Avatar người nói khớp miệng qua ComfyUI trên máy (bố cục góc màn hình hoặc toàn màn hình).
+- [ ] Avatar qua dịch vụ trả phí (HeyGen, D-ID…) — chưa làm.
 - [x] P2: CapCut 9.x (dò phiên bản, khuôn từ app, chặn 10.x), gói dựng FCPXML, TTS tiếng Việt chạy trên máy, tự dò NVENC.
 - [ ] **Bước 3 — Bản server/VPS** chạy 24/7.
 - [x] **Bước 4 — Xuất project nháp CapCut** (cần xác nhận trên CapCut desktop thật).

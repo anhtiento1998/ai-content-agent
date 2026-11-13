@@ -13,7 +13,7 @@ from .base import (
     VideoResult,
     VoiceGenerator,
 )
-from .comfyui_provider import ComfyUIImageProvider, ComfyUIVideoProvider
+from .comfyui_provider import ComfyUIAvatarProvider, ComfyUIImageProvider, ComfyUIVideoProvider
 from .google_provider import GeminiProvider, GeminiVoiceProvider, ImagenProvider, VeoProvider
 from .local_provider import CardImageProvider, SilentVoiceProvider
 from .local_tts import VieNeuVoiceProvider, ZeroTTSVoiceProvider
@@ -46,7 +46,13 @@ VOICE_PROVIDERS = {
     "silent": SilentVoiceProvider,
 }
 
+AVATAR_PROVIDERS = {
+    "comfyui": ComfyUIAvatarProvider,
+}
+
 __all__ = [
+    "AVATAR_PROVIDERS",
+    "ComfyUIAvatarProvider",
     "ScriptResult",
     "VideoResult",
     "TextGenerator",

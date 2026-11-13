@@ -46,6 +46,58 @@ def video_to_clip(video: str, out: str, duration: float, *, cwd: str, encoder: E
     )
 
 
+AVATAR_POSITIONS = ("bottom-left", "bottom-right", "top-left", "top-right")
+_AVATAR_MARGIN = 48
+_AVATAR_TOP = 260  # below the AI label and logo
+_AVATAR_ABOVE_CAPTIONS = 590  # captions sit 440 px above the bottom edge; stay clear of them
+
+
+def avatar_box(size_percent: int, position: str) -> tuple[int, int, int]:
+    """(size, x, y) in pixels of the avatar circle for a corner position."""
+
+    if position not in AVATAR_POSITIONS:
+        raise ValueError(f"AVATAR_POSITION must be one of {', '.join(AVATAR_POSITIONS)}, got {position!r}")
+    size = max(120, min(WIDTH - 2 * _AVATAR_MARGIN, round(WIDTH * size_percent / 100))) // 2 * 2
+    x = _AVATAR_MARGIN if position.endswith("left") else WIDTH - size - _AVATAR_MARGIN
+    y = _AVATAR_TOP if position.startswith("top") else HEIGHT - _AVATAR_ABOVE_CAPTIONS - size
+    return size, x, y
+
+
+def write_avatar_mask(size: int, mask_path: str, ring_path: str, *, ring_width: int = 8) -> None:
+    """A circular alpha mask and a white ring to frame the avatar."""
+
+    from PIL import Image, ImageDraw
+
+    scale = 4  # draw large and shrink for smooth edges
+    mask = Image.new("L", (size * scale, size * scale), 0)
+    ImageDraw.Draw(mask).ellipse([0, 0, size * scale - 1, size * scale - 1], fill=255)
+    mask.resize((size, size), Image.LANCZOS).save(mask_path)
+    ring = Image.new("RGBA", (size * scale, size * scale), (0, 0, 0, 0))
+    ImageDraw.Draw(ring).ellipse([0, 0, size * scale - 1, size * scale - 1], outline=(255, 255, 255, 235),
+                                 width=ring_width * scale)
+    ring.resize((size, size), Image.LANCZOS).save(ring_path)
+
+
+def overlay_avatar(
+    base: str, avatar: str, out: str, duration: float, *, size: int, x: int, y: int, mask: str, ring: str,
+    cwd: str, encoder: Encoder | None = None,
+) -> None:
+    """Put the talking head in a circle over a scene clip. The avatar is cropped to a square from
+    its upper part (where the face is), looped if it is shorter than the scene, and muted."""
+
+    filters = (
+        f"[1:v]fps={FPS},scale={size}:{size}:force_original_aspect_ratio=increase,"
+        f"crop={size}:{size}:(iw-{size})/2:(ih-{size})*0.2,format=yuva420p[head];"
+        f"[2:v]format=gray[mask];[head][mask]alphamerge[cut];"
+        f"[0:v][cut]overlay={x}:{y}[framed];[framed][3:v]overlay={x}:{y}[v]"
+    )
+    run_ffmpeg(
+        ["-i", base, "-stream_loop", "-1", "-i", avatar, "-loop", "1", "-i", mask, "-loop", "1", "-i", ring,
+         "-filter_complex", filters, "-map", "[v]", "-t", f"{duration:.3f}", *_video(encoder), "-an", out],
+        cwd=cwd,
+    )
+
+
 def normalize_audio(src: str, out: str, *, cwd: str) -> None:
     run_ffmpeg(["-i", src, *_PCM, out], cwd=cwd)
 

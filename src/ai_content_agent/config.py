@@ -33,6 +33,12 @@ class Config:
     voice_name: str | None = None
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_workflow: str | None = None
+    avatar_provider: str = "none"
+    avatar_workflow: str | None = None
+    avatar_image: str | None = None
+    avatar_layout: str = "corner"
+    avatar_position: str = "bottom-left"
+    avatar_size: int = 34
     vieneu_base_url: str = "http://127.0.0.1:8000/v1"
     vieneu_api_key: str | None = None
     video_encoder: str = "auto"
@@ -135,6 +141,12 @@ class Config:
             "text_provider": self.text_provider,
             "visual_provider": self.visual_provider,
             "voice_provider": self.voice_provider,
+            "avatar_provider": self.avatar_provider,
+            "avatar_providers": {
+                "none": entry(True),
+                "comfyui": entry(bool(self.avatar_workflow), "Cần AVATAR_WORKFLOW (workflow khớp miệng xuất dạng API)"),
+            },
+            "avatar_layout": self.avatar_layout,
             "text_providers": {
                 "gpt": entry(openai),
                 "claude": entry(bool(self.anthropic_api_key)),

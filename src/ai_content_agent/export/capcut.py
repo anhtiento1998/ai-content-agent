@@ -364,8 +364,11 @@ class CapCutExporter:
         script.add_track(cc.TrackType.audio, "voice")
         if timeline.get("music"):
             script.add_track(cc.TrackType.audio, "music")
+        avatar = timeline.get("avatar")
+        if avatar:
+            script.add_track(cc.TrackType.video, "avatar", relative_index=1)
         if timeline.get("logo"):
-            script.add_track(cc.TrackType.video, "logo", relative_index=1)
+            script.add_track(cc.TrackType.video, "logo", relative_index=2 if avatar else 1)
         script.add_track(cc.TrackType.text, "hooks")
 
         # Integer microsecond boundaries derived from cumulative times, so adjacent
@@ -373,6 +376,8 @@ class CapCutExporter:
         bounds = [round(scene["start"] * _US) for scene in timeline["scenes"]] + [round(timeline["duration"] * _US)]
         for scene, start, end in zip(timeline["scenes"], bounds, bounds[1:]):
             self._add_visual(cc, script, work / scene["visual"], scene, start, end - start, width, height)
+            if avatar and scene.get("avatar"):
+                self._add_avatar(cc, script, work / scene["avatar"], avatar, start, end - start, width, height)
             voice = cc.AudioMaterial(str(work / scene["voice"]))
             voice_us = min(round(scene["voice_duration"] * _US), voice.duration, end - start)
             script.add_segment(cc.AudioSegment(voice, cc.Timerange(start, voice_us)), "voice")
@@ -509,6 +514,24 @@ class CapCutExporter:
         if isinstance(data.get("draft_ids"), int):
             data["draft_ids"] += 1
         _atomic_write(path, json.dumps(data, ensure_ascii=False))
+
+    def _add_avatar(self, cc, script, path: Path, box: dict, start: int, duration: int, width: int, height: int):
+        """The corner talking head as its own track (a plain rectangle: CapCut drafts carry no circle
+        mask here — add one in CapCut if wanted). CapCut positions by the clip centre, in half-canvas units."""
+
+        material = cc.VideoMaterial(str(path))
+        clip_w, clip_h, _ = probe_video(str(path))
+        fit = min(width / clip_w, height / clip_h)  # CapCut first fits the clip inside the canvas
+        scale = box["size"] / (min(clip_w, clip_h) * fit)
+        centre_x = (box["x"] + box["size"] / 2) / width * 2 - 1
+        centre_y = 1 - (box["y"] + box["size"] / 2) / height * 2
+        for offset, piece in self._loop_pieces(duration, material.duration):
+            script.add_segment(
+                cc.VideoSegment(material, cc.Timerange(start + offset, piece), source_timerange=cc.Timerange(0, piece),
+                                volume=0.0, clip_settings=cc.ClipSettings(scale_x=scale, scale_y=scale,
+                                                                          transform_x=centre_x, transform_y=centre_y)),
+                "avatar",
+            )
 
     @staticmethod
     def _loop_pieces(total_us: int, source_us: int) -> list[tuple[int, int]]:
