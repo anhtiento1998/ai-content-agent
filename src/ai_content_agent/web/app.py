@@ -262,7 +262,10 @@ def create_app(
             storyboard = clean_storyboard(body.model_dump())
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        _drafts().update(draft_id, storyboard)
+        try:
+            _drafts().update(draft_id, storyboard)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return _drafts().get(draft_id).summary()
 
     @api.post("/drafts/{draft_id}/render", status_code=202)
@@ -271,12 +274,18 @@ def create_app(
         platforms = list(dict.fromkeys(body.platforms or draft.platforms))
         if not body.dry_run and not platforms:
             raise HTTPException(status_code=422, detail="choose at least one platform, or enable dry_run")
-        return asdict(jobs.submit_render(draft, platforms, dry_run=body.dry_run))
+        try:
+            return asdict(jobs.submit_render(draft, platforms, dry_run=body.dry_run))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @api.delete("/drafts/{draft_id}")
     def discard_draft(draft_id: int) -> dict:
         _open_draft(draft_id)
-        _drafts().set_status(draft_id, DISCARDED)
+        try:
+            _drafts().discard(draft_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"status": DISCARDED}
 
     @api.get("/performance")

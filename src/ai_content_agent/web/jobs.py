@@ -22,7 +22,7 @@ from typing import Callable
 from ai_content_agent.history import HistoryStore
 from ai_content_agent.pipeline.batch import BatchItem, BatchRunner
 from ai_content_agent.pipeline.content_pipeline import ContentPipeline, RunOutcome
-from ai_content_agent.pipeline.drafts import OPEN, RENDERED, RENDERING, Draft, DraftStore
+from ai_content_agent.pipeline.drafts import OPEN, RENDERED, Draft, DraftStore
 from ai_content_agent.studio import StudioStageError
 from ai_content_agent.studio.studio import Checkpoint
 from ai_content_agent.studio.variation import VariationPlan
@@ -163,7 +163,7 @@ class JobManager:
 
         if self._drafts is None:
             raise RuntimeError("This job manager has no draft store")
-        self._drafts.set_status(draft.id, RENDERING)
+        self._drafts.claim_render(draft.id)
         return self._enqueue(Job(
             id=uuid.uuid4().hex[:12], topic=draft.topic, platforms=list(platforms), style=draft.style,
             dry_run=dry_run, force=True, source="script", draft_id=draft.id,

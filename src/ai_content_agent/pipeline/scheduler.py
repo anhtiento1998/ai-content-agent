@@ -304,6 +304,7 @@ class ScheduleManager:
         self._dedup_days = dedup_window_days
         self._state = state
         self._scheduler = None
+        self._armed_settings = None
         self._lock = threading.Lock()
 
     def start(self) -> "ScheduleManager":
@@ -312,12 +313,20 @@ class ScheduleManager:
         self._scheduler = BackgroundScheduler()
         self._scheduler.start()
         self._arm(catch_up=True)
+        self._scheduler.add_job(self.sync, "interval", seconds=5, id="content-settings-sync",
+                                coalesce=True, max_instances=1)
         return self
 
     def shutdown(self) -> None:
         if self._scheduler:
             self._scheduler.shutdown(wait=False)
             self._scheduler = None
+
+    def sync(self) -> None:
+        """Apply settings saved by another client, such as the MCP server."""
+
+        if self.store.settings() != self._armed_settings:
+            self._arm()
 
     def _arm(self, *, catch_up: bool = False) -> None:
         """(Re)create the cron job from the stored settings."""
@@ -329,6 +338,7 @@ class ScheduleManager:
                 if self._scheduler.get_job(job_id):
                     self._scheduler.remove_job(job_id)
             settings = self.store.settings()
+            self._armed_settings = settings
             if not (settings["enabled"] and settings["cron"]):
                 return
             if catch_up:
@@ -342,6 +352,11 @@ class ScheduleManager:
         """One scheduled run: take the next topic in rotation and submit it."""
 
         settings = self.store.settings()
+        if self._scheduler is not None and settings != self._armed_settings:
+            self.sync()  # An old trigger must not run after a different cron/target was saved.
+            return
+        if self._scheduler is not None and not settings["enabled"]:
+            return
         topic = self.store.next_topic(skip=self._recently_done)
         if topic is None:
             message = (ALL_TOPICS_USED.format(days=self._dedup_days) if self.store.topics()
